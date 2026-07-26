@@ -2,6 +2,7 @@
 """Act III preconditions: durability probe, single-worker refusal, engine recovery."""
 
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -122,3 +123,46 @@ def test_engine_recover_refuses_in_multi_worker_mode(tmp_path: Path) -> None:
             sk.recover()
     finally:
         led.close()
+
+
+# --- V-3: one multi_worker connection per worker --------------------------
+def test_shared_multi_worker_ledger_across_threads_is_refused(tmp_path: Path) -> None:
+    led = SqliteLedger(tmp_path / "l.sqlite", multi_worker=True)
+    try:
+        led.claim_leased("k", "s", "t", "fp", owner="A", lease_seconds=30.0)  # binds this thread
+        errs: list[str] = []
+
+        def other() -> None:
+            try:
+                led.claim_leased("k2", "s", "t", "fp", owner="B", lease_seconds=30.0)
+            except SakritError as e:
+                errs.append(str(e))
+
+        t = threading.Thread(target=other)
+        t.start()
+        t.join()
+        assert len(errs) == 1
+        assert "per worker" in errs[0]
+    finally:
+        led.close()
+
+
+def test_separate_connections_per_worker_thread_are_fine(tmp_path: Path) -> None:
+    # The sanctioned model: each worker its own connection to the shared file → no trip.
+    db = tmp_path / "l.sqlite"
+    ok: list[object] = []
+
+    def worker(name: str) -> None:
+        led = SqliteLedger(db, multi_worker=True)  # this worker's own connection
+        try:
+            c = led.claim_leased(f"k-{name}", "s", "t", "fp", owner=name, lease_seconds=30.0)
+            ok.append(c.kind)
+        finally:
+            led.close()
+
+    threads = [threading.Thread(target=worker, args=(n,)) for n in ("A", "B", "C")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(ok) == 3  # each on its own connection+thread → all claim fine

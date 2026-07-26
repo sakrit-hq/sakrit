@@ -634,3 +634,116 @@ def test_settle_leased_async_heartbeats_during_slow_dispatch(tmp_path) -> None: 
     assert out == "ok"
     assert len(beats) >= 1  # the lease was renewed on the event loop while the effect ran
     led.close()
+
+
+def test_v5a_takeover_preserves_executing_across_crashed_reconcile() -> None:
+    # V-5a: A (L1) dispatched, effect landed, A died (EXECUTING). B takes over → RECONCILE,
+    # and the row MUST stay EXECUTING. B dies before reconciling; C takes over → still
+    # RECONCILE, never a blind PROCEED on the landed effect.
+    led = _led()
+    led.claim_leased(
+        "k", "s", "t", "fp", owner="A", now=1.0, lease_seconds=LEASE, reconcilable=True
+    )
+    led.fence("k", 1, EffectState.EXECUTING)
+
+    b = led.claim_leased(
+        "k", "s", "t", "fp", owner="B", now=200.0, lease_seconds=LEASE, reconcilable=True
+    )
+    assert b.kind is ClaimKind.RECONCILE
+    assert led.state_of("k") is EffectState.EXECUTING  # preserved, NOT downgraded to CLAIMED
+
+    c = led.claim_leased(
+        "k", "s", "t", "fp", owner="C", now=400.0, lease_seconds=LEASE, reconcilable=True
+    )
+    assert c.kind is ClaimKind.RECONCILE  # not a blind PROCEED
+    assert led.state_of("k") is EffectState.EXECUTING
+
+
+def test_v5b_l2_ttl_horizon_survives_a_crashed_takeover() -> None:
+    # V-5b: the L2-TTL horizon keys on state==EXECUTING; a crashed takeover must not erase
+    # it to CLAIMED (which would let a later past-TTL taker PROCEED — an un-dedupable dup).
+    told: list[str] = []
+    led = SqliteLedger(on_ambiguous=told.append)
+    led.claim_leased(
+        "k",
+        "s",
+        "t",
+        "fp",
+        owner="A",
+        now=1.0,
+        lease_seconds=LEASE,
+        provider_dedup=True,
+        provider_ttl_s=3600,
+    )
+    led.fence("k", 1, EffectState.EXECUTING)
+
+    b = led.claim_leased(
+        "k",
+        "s",
+        "t",
+        "fp",
+        owner="B",
+        now=200.0,
+        lease_seconds=LEASE,
+        provider_dedup=True,
+        provider_ttl_s=3600,
+    )
+    assert b.kind is ClaimKind.PROCEED  # within TTL → re-dispatch
+    assert led.state_of("k") is EffectState.EXECUTING  # preserved
+
+    _age_row(led, "k", timedelta(hours=2))  # B dies; the row ages past TTL
+    c = led.claim_leased(
+        "k",
+        "s",
+        "t",
+        "fp",
+        owner="C",
+        now=400.0,
+        lease_seconds=LEASE,
+        provider_dedup=True,
+        provider_ttl_s=3600,
+    )
+    assert c.kind is ClaimKind.AMBIGUOUS  # TTL horizon survived the crashed takeover
+    assert told == ["k"]
+
+
+def test_v5c_transient_reconcile_error_then_retry_still_reconciles() -> None:
+    # V-5c: if reconcile raises (a transient network error), the row must stay EXECUTING so
+    # the retry reconciles again — not a blind PROCEED.
+    led = _led()
+    _stale_l1_row(led)  # L1 EXECUTING, expired lease
+
+    def boom(key: str) -> Reconciliation:
+        raise RuntimeError("transient network error")
+
+    with pytest.raises(RuntimeError):
+        settle_leased(
+            led,
+            key="k",
+            scope="s",
+            tool="t",
+            fingerprint="fp",
+            fn=lambda: 1,
+            reconcilable=True,
+            reconcile=boom,
+        )
+    assert led.state_of("k") is EffectState.EXECUTING  # evidence preserved across the raise
+
+    calls: list[int] = []
+
+    def fn() -> str:
+        calls.append(1)
+        return "re-sent"
+
+    out = settle_leased(
+        led,
+        key="k",
+        scope="s",
+        tool="t",
+        fingerprint="fp",
+        fn=fn,
+        reconcilable=True,
+        reconcile=lambda k: Reconciliation.settled("provider-record"),
+    )
+    assert out == "provider-record"  # the retry reconciled → adopted
+    assert calls == []  # never blind re-dispatched

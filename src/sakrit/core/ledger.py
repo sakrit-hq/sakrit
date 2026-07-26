@@ -28,6 +28,8 @@ import json
 import logging
 import os
 import sqlite3
+import threading
+import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -152,6 +154,13 @@ class SqliteLedger:
         self._lock_fd: int | None = None
         self._multi_worker = multi_worker
         self.owner = owner or f"worker-{os.getpid()}-{id(self):x}"
+        # V-3: a multi_worker ledger is one connection == one worker. It runs with
+        # check_same_thread=False (leases coordinate instead), so SQLite won't catch a
+        # connection shared across worker threads — which defeats BEGIN IMMEDIATE's
+        # per-connection serialization. We bind the connection to its first *claiming*
+        # thread and refuse a claim from any other (the heartbeat thread only heartbeats).
+        self._claim_thread: int | None = None
+        self._claim_thread_lock = threading.Lock()
         # P1-6: the differentiating half of the guarantee is "…or tells you it couldn't."
         # Every transition *into* AMBIGUOUS routes through _tell_ambiguous, which logs a
         # warning (never silent) and fires this optional alert/metric hook.
@@ -179,9 +188,13 @@ class SqliteLedger:
         self.conn = sqlite3.connect(
             self._path, isolation_level=None, check_same_thread=not multi_worker
         )
-        self._configure_durability(i_accept_data_loss)  # Q12
         if multi_worker:
-            self.conn.execute("PRAGMA busy_timeout=5000")  # concurrent writers wait, don't error
+            # Set busy_timeout FIRST, before any write. Setup itself contends — several
+            # workers opening one fresh file race on `PRAGMA journal_mode=WAL` and the
+            # schema/mode-stamp writes; without a busy timeout the loser gets an immediate
+            # "database is locked" at construction. With it, concurrent writers wait.
+            self.conn.execute("PRAGMA busy_timeout=5000")
+        self._configure_durability(i_accept_data_loss)  # Q12
         self.conn.executescript(_SCHEMA)
         self._enforce_mode_stamp(multi_worker)
 
@@ -206,8 +219,31 @@ class SqliteLedger:
     @property
     def multi_worker(self) -> bool:
         """Whether this ledger coordinates concurrent workers (leases + fencing). Off →
-        a single-thread-bound connection; a background writer (heartbeat) is illegal."""
+        a single-thread-bound connection; a background writer (heartbeat) is illegal.
+
+        The coordination model is **one ledger (connection) per worker** — leases and
+        fencing coordinate *across* connections, not within one. Sharing a single
+        ``multi_worker`` ledger across worker threads is refused (V-3); give each worker
+        its own ``SqliteLedger(path, multi_worker=True)``."""
         return self._multi_worker
+
+    def _bind_claim_thread(self) -> None:
+        """Bind this connection to its first claiming thread; refuse a claim from another
+        (V-3). No-op for a single-worker ledger (SQLite's own same-thread guard covers it)."""
+        if not self._multi_worker:
+            return
+        tid = threading.get_ident()
+        with self._claim_thread_lock:
+            if self._claim_thread is None:
+                self._claim_thread = tid
+            elif self._claim_thread != tid:
+                raise SakritError(
+                    "one SqliteLedger(multi_worker=True) connection per worker: this ledger "
+                    f"was first claimed from thread {self._claim_thread} and is now used from "
+                    f"{tid}. Sharing a single connection across workers defeats the atomic "
+                    "claim (BEGIN IMMEDIATE serializes per connection). Give each worker its "
+                    "own SqliteLedger(path, multi_worker=True)."
+                )
 
     def _db_now(self) -> float:
         """Wall-clock seconds from the DB's own clock — the single source of truth
@@ -239,8 +275,30 @@ class SqliteLedger:
             return
         # WAL + FULL: durable against a process crash *and* power loss. (WAL+NORMAL
         # is process-crash-safe but not power-loss-safe — see fault_model.)
-        self.conn.execute("PRAGMA journal_mode=WAL")
+        self._set_wal_with_retry()
         self.conn.execute("PRAGMA synchronous=FULL")
+
+    def _set_wal_with_retry(self, attempts: int = 50, delay: float = 0.02) -> None:
+        """Enable WAL, tolerating concurrent cold-start. Converting a fresh file to WAL
+        needs a brief exclusive moment, and SQLite's WAL conversion does *not* honor
+        busy_timeout — so N workers opening one new file race it and the losers get an
+        immediate "database is locked". Retry a bounded number of times; fail loud if WAL
+        never takes (a durability claim we couldn't keep must not be silent)."""
+        for i in range(attempts):
+            try:
+                mode = self.conn.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+                if str(mode).lower() == "wal":
+                    return
+            except sqlite3.OperationalError as exc:
+                if "locked" not in str(exc).lower() or i == attempts - 1:
+                    raise
+            time.sleep(delay)
+        mode = str(self.conn.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+        if mode != "wal":
+            raise SakritError(
+                f"could not enable WAL journal mode (got {mode!r}) under contention — "
+                "durability is not guaranteed; retry, or provision the database once first."
+            )
 
     def fault_model(self) -> str:
         """The durability tier this ledger certifies — for docs and observability."""
@@ -284,6 +342,7 @@ class SqliteLedger:
         reconcilable: bool = False,
     ) -> Claim:
         """Atomically decide what to do with ``key`` and take ownership if we run it."""
+        self._bind_claim_thread()  # V-3
         self.conn.execute("BEGIN IMMEDIATE")
         try:
             row = self.conn.execute(
@@ -506,6 +565,7 @@ class SqliteLedger:
         dedup (P1-5, leased variant). Fencing makes a returning zombie harmless: its
         stale-token writes are rejected (see :meth:`fence`).
         """
+        self._bind_claim_thread()  # V-3: one connection per worker
         if now is None:
             now = self._db_now()  # DB clock only (Q21)
         self.conn.execute("BEGIN IMMEDIATE")
@@ -582,8 +642,29 @@ class SqliteLedger:
                     )
                     self._tell_ambiguous(key, "L2 leftover past provider key TTL (leased takeover)")
                     claim = Claim(ClaimKind.AMBIGUOUS)
+                elif state is EffectState.EXECUTING:
+                    # V-5: an EXECUTING row was mid-flight — something may have run. PRESERVE
+                    # that evidence: transfer the lease + bump the fence only. Do NOT
+                    # downgrade to CLAIMED (which asserts "nothing ran") and do NOT overwrite
+                    # the in-flight fingerprint. If *this* taker dies, or its reconcile
+                    # raises, the next takeover still sees EXECUTING and re-decides by ladder
+                    # — never a blind PROCEED on a landed effect. (Downgrading first is the
+                    # same evidence-erasure bug as Q1/Q2/P3-1: no transition without evidence.)
+                    new_token = token + 1
+                    self.conn.execute(
+                        "UPDATE effects SET fencing_token = ?, lease_owner = ?, "
+                        "lease_expires = ? WHERE key = ?",
+                        (new_token, owner, now + lease_seconds, key),
+                    )
+                    # Reconcilable (L1/L2R) → RECONCILE ("did it happen?"); a bare L2 row
+                    # (within TTL — past-TTL was surfaced above) → PROCEED (re-dispatch, the
+                    # provider dedups). The EXECUTING state is untouched, so the L2-TTL and
+                    # forbidden-takeover branches re-fire correctly on any later takeover.
+                    kind = ClaimKind.RECONCILE if reconcilable else ClaimKind.PROCEED
+                    claim = Claim(kind, fencing_token=new_token)
                 else:
-                    # Expired lease on a re-ownable row → take over, bump the fence.
+                    # CLAIMED (crash *before* dispatch) / INTENDED / FAILED — nothing ran.
+                    # Re-own to CLAIMED with a fresh fingerprint and PROCEED.
                     new_token = token + 1
                     self.conn.execute(
                         "UPDATE effects SET state = ?, fingerprint = ?, fencing_token = ?, "
@@ -597,17 +678,7 @@ class SqliteLedger:
                             key,
                         ),
                     )
-                    # P1-2: a reconcilable row that was already EXECUTING means the
-                    # presumed-dead owner may have *completed* the effect at a provider
-                    # that does not dedup (L1/L2R). Re-dispatching blind would duplicate.
-                    # Signal RECONCILE — the caller asks "did it happen?" before acting.
-                    # A CLAIMED leftover (crash before dispatch) never ran → plain PROCEED.
-                    kind = (
-                        ClaimKind.RECONCILE
-                        if state is EffectState.EXECUTING and reconcilable
-                        else ClaimKind.PROCEED
-                    )
-                    claim = Claim(kind, fencing_token=new_token)
+                    claim = Claim(ClaimKind.PROCEED, fencing_token=new_token)
             self.conn.execute("COMMIT")
             return claim
         except BaseException:
