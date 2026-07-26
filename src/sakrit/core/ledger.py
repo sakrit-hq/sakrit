@@ -276,7 +276,16 @@ class SqliteLedger:
         # WAL + FULL: durable against a process crash *and* power loss. (WAL+NORMAL
         # is process-crash-safe but not power-loss-safe — see fault_model.)
         self._set_wal_with_retry()
+        # P1-14: don't just *set* the pragmas — verify they took. A SET that silently
+        # didn't apply (a read-only mount, a driver quirk) would leave the durability claim
+        # a lie. synchronous FULL == 2 (OFF=0, NORMAL=1, FULL=2, EXTRA=3).
         self.conn.execute("PRAGMA synchronous=FULL")
+        sync = self.conn.execute("PRAGMA synchronous").fetchone()[0]
+        if sync not in (2, 3):  # FULL or the even-stricter EXTRA
+            raise SakritError(
+                f"could not set synchronous=FULL (got {sync}) — power-loss durability is not "
+                "guaranteed; pass i_accept_data_loss=True to opt out explicitly."
+            )
 
     def _set_wal_with_retry(self, attempts: int = 50, delay: float = 0.02) -> None:
         """Enable WAL, tolerating concurrent cold-start. Converting a fresh file to WAL

@@ -166,3 +166,15 @@ def test_separate_connections_per_worker_thread_are_fine(tmp_path: Path) -> None
     for t in threads:
         t.join()
     assert len(ok) == 3  # each on its own connection+thread → all claim fine
+
+
+def test_durability_pragmas_are_verified_not_just_set(tmp_path: Path) -> None:
+    # P1-14: construction asserts WAL+FULL actually took effect (it would raise otherwise),
+    # so fault_model() reports a checked property, not a hope.
+    led = SqliteLedger(tmp_path / "l.sqlite")
+    try:
+        assert str(led.conn.execute("PRAGMA journal_mode").fetchone()[0]).lower() == "wal"
+        assert led.conn.execute("PRAGMA synchronous").fetchone()[0] == 2  # FULL
+        assert led.fault_model() == "process-and-power-crash-safe (WAL+FULL)"
+    finally:
+        led.close()
