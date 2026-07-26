@@ -38,6 +38,11 @@ class EffectDecl:
     classes: Mapping[str, ArgClass] = field(default_factory=dict)
     default: ArgClass = ArgClass.IDENTITY
     provider_key_param: str | None = None
+    clean_failures: tuple[type[BaseException], ...] = ()
+    """Exception types the author asserts imply the effect did NOT execute (e.g.
+    validation errors before any I/O, a provider 4xx meaning "rejected, nothing
+    done"). Only these record ``FAILED`` (safely re-claimable). Every other
+    exception is treated as *ambiguous* — the effect may have landed."""
 
     @property
     def provider_dedup(self) -> bool:

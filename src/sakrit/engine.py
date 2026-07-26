@@ -84,6 +84,7 @@ class Sakrit:
             args=args,
             kwargs=kw,
             provider_key_param=decl.provider_key_param,
+            clean_failures=decl.clean_failures,
         )
 
     def effect(

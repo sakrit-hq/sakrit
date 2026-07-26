@@ -116,20 +116,55 @@ def test_recover_moves_executing_to_ambiguous() -> None:
     assert led.state_of(key) is EffectState.AMBIGUOUS
 
 
-def test_failure_recorded_then_reattemptable() -> None:
+def test_undeclared_exception_is_ambiguous_not_failed() -> None:
+    # An unclassified exception (a timeout may have executed) must NOT become a
+    # retriable FAILED. The row stays EXECUTING; a retry surfaces as ambiguous.
     led = SqliteLedger()
     key = _key()
     fp = _fp(to="a@x.com")
 
     def boom(**k: object) -> str:
-        raise ValueError("smtp down")
+        raise TimeoutError("the POST may or may not have landed")
 
-    with pytest.raises(ValueError, match="smtp down"):
+    with pytest.raises(TimeoutError):
         settle(led, key=key, scope="run-1", tool="email.send", fingerprint=fp, fn=boom)
+    assert led.state_of(key) is EffectState.EXECUTING  # not FAILED
+
+    with pytest.raises(AmbiguousOutcome):
+        settle(led, key=key, scope="run-1", tool="email.send", fingerprint=fp, fn=lambda: "ok")
+    assert led.state_of(key) is EffectState.AMBIGUOUS
+
+
+def test_declared_clean_failure_is_reattemptable() -> None:
+    # A declared clean failure asserts non-execution → FAILED, safely re-claimable.
+    led = SqliteLedger()
+    key = _key()
+    fp = _fp(to="a@x.com")
+
+    def boom(**k: object) -> str:
+        raise ValueError("validation error, raised before any I/O")
+
+    with pytest.raises(ValueError, match="validation"):
+        settle(
+            led,
+            key=key,
+            scope="run-1",
+            tool="email.send",
+            fingerprint=fp,
+            fn=boom,
+            clean_failures=(ValueError,),
+        )
     assert led.state_of(key) is EffectState.FAILED
 
-    # A crash-before-dispatch / failed attempt never completed → retry re-owns it.
-    out = settle(led, key=key, scope="run-1", tool="email.send", fingerprint=fp, fn=lambda: "ok")
+    out = settle(
+        led,
+        key=key,
+        scope="run-1",
+        tool="email.send",
+        fingerprint=fp,
+        fn=lambda: "ok",
+        clean_failures=(ValueError,),
+    )
     assert out == "ok"
     assert led.state_of(key) is EffectState.SUCCEEDED
 

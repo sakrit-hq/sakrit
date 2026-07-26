@@ -28,6 +28,7 @@ def settle(
     args: tuple[object, ...] = (),
     kwargs: Mapping[str, object] | None = None,
     provider_key_param: str | None = None,
+    clean_failures: tuple[type[BaseException], ...] = (),
 ) -> object:
     """Run ``fn`` exactly once for ``key`` (durably), or return its saved result.
 
@@ -60,7 +61,13 @@ def settle(
     try:
         result = fn(*args, **call_kwargs)
     except BaseException as exc:
-        ledger.record_failure(key, exc)
+        # A *declared* clean failure proves the effect did not execute → FAILED
+        # (safely re-claimable). Every other exception is AMBIGUOUS: the effect may
+        # have landed (a timeout on a POST *is* the ambiguous window). Leave the row
+        # EXECUTING and let recovery resolve it per ladder — never launder an
+        # unclassified exception into a retriable FAILED, which mints a duplicate.
+        if isinstance(exc, clean_failures):
+            ledger.record_failure(key, exc)
         raise
     ledger.record_success(key, result)
     return result
