@@ -45,6 +45,13 @@ class EffectDecl:
     validation errors before any I/O, a provider 4xx meaning "rejected, nothing
     done"). Only these record ``FAILED`` (safely re-claimable). Every other
     exception is treated as *ambiguous* — the effect may have landed."""
+    provider_ttl_s: float | None = None
+    """How long the provider remembers an idempotency key (L2). Beyond this horizon the
+    provider has forgotten the key, so a crash-recovery re-dispatch would *not* dedup —
+    a silent duplicate. Recovery surfaces ``AMBIGUOUS`` for an L2 leftover older than the
+    TTL instead of re-claiming it (design §6: "within provider TTL; AMBIGUOUS beyond").
+    ``None`` means unbounded (the current, over-optimistic behavior — set it for real
+    providers, e.g. Stripe's 24h)."""
     reconcile: Callable[[str], Reconciliation] | None = None
     """A read-only query answering "did this effect happen?" for crash recovery.
     Its presence makes the tool L1 (or L2R, with ``provider_key_param``)."""

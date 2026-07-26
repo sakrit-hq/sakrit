@@ -31,6 +31,7 @@ def settle(
     args: tuple[object, ...] = (),
     kwargs: Mapping[str, object] | None = None,
     provider_key_param: str | None = None,
+    provider_ttl_s: float | None = None,
     clean_failures: tuple[type[BaseException], ...] = (),
     reconcilable: bool = False,
 ) -> object:
@@ -47,6 +48,7 @@ def settle(
         tool,
         fingerprint,
         provider_dedup=provider_key_param is not None,
+        provider_ttl_s=provider_ttl_s,
         reconcilable=reconcilable,
     )
 

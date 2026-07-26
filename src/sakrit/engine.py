@@ -122,6 +122,7 @@ class Sakrit:
             args=args,
             kwargs=kw,
             provider_key_param=decl.provider_key_param,
+            provider_ttl_s=decl.provider_ttl_s,
             clean_failures=decl.clean_failures,
             reconcilable=decl.reconcile is not None,
         )

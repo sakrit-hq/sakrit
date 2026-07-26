@@ -89,6 +89,18 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _within_ttl(created_at: str, ttl_s: float | None) -> bool:
+    """Whether a row claimed at ``created_at`` is still inside its provider key-TTL.
+
+    ``ttl_s=None`` means unbounded (always within). Uses wall-clock, matching how
+    ``created_at`` was written — a same-machine restart's skew is negligible against a
+    provider TTL measured in hours (P1-5)."""
+    if ttl_s is None:
+        return True
+    age = (datetime.now(timezone.utc) - datetime.fromisoformat(created_at)).total_seconds()
+    return age <= ttl_s
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS effects (
   key            TEXT PRIMARY KEY,
@@ -97,6 +109,7 @@ CREATE TABLE IF NOT EXISTS effects (
   fingerprint    TEXT NOT NULL,
   state          TEXT NOT NULL,
   provider_dedup INTEGER NOT NULL DEFAULT 0,
+  provider_ttl_s REAL,
   reconcilable   INTEGER NOT NULL DEFAULT 0,
   result         TEXT,
   result_ref     TEXT,
@@ -262,6 +275,7 @@ class SqliteLedger:
         fingerprint: str,
         *,
         provider_dedup: bool = False,
+        provider_ttl_s: float | None = None,
         reconcilable: bool = False,
     ) -> Claim:
         """Atomically decide what to do with ``key`` and take ownership if we run it."""
@@ -275,8 +289,8 @@ class SqliteLedger:
             if row is None:
                 self.conn.execute(
                     "INSERT INTO effects "
-                    "(key, scope, tool, fingerprint, state, provider_dedup, reconcilable, "
-                    "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    "(key, scope, tool, fingerprint, state, provider_dedup, provider_ttl_s, "
+                    "reconcilable, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         key,
                         scope,
@@ -284,6 +298,7 @@ class SqliteLedger:
                         fingerprint,
                         EffectState.CLAIMED.value,
                         int(provider_dedup),
+                        provider_ttl_s,
                         int(reconcilable),
                         _now(),
                     ),
@@ -381,17 +396,28 @@ class SqliteLedger:
             seam("during_recovery")
 
         rows = self.conn.execute(
-            "SELECT key, provider_dedup, reconcilable FROM effects WHERE state = ?",
+            "SELECT key, provider_dedup, provider_ttl_s, reconcilable, created_at "
+            "FROM effects WHERE state = ?",
             (EffectState.EXECUTING.value,),
         ).fetchall()
         ambiguous: list[str] = []
-        for key, dedup, reconcilable in rows:
+        for key, dedup, ttl_s, reconcilable, created_at in rows:
             if reconcilable:
                 pass  # engine-driven; see pending_reconcile()
-            elif dedup:
+            elif dedup and _within_ttl(created_at, ttl_s):
+                # L2 within the provider's key-TTL → the provider still dedups a retry.
                 self.conn.execute(
                     "UPDATE effects SET state = ? WHERE key = ?", (EffectState.INTENDED.value, key)
                 )
+            elif dedup:
+                # L2 past the horizon (P1-5): the provider has forgotten the key, so a
+                # re-dispatch would NOT dedup → surface rather than silently duplicate.
+                self.conn.execute(
+                    "UPDATE effects SET state = ?, settled_at = ? WHERE key = ?",
+                    (EffectState.AMBIGUOUS.value, _now(), key),
+                )
+                ambiguous.append(key)
+                self._tell_ambiguous(key, "L2 leftover older than the provider key TTL")
             else:
                 self.conn.execute(
                     "UPDATE effects SET state = ?, settled_at = ? WHERE key = ?",
