@@ -49,9 +49,14 @@ def _record_success_fenced(
         return result
     state = ledger.state_of(key)
     if state is EffectState.AMBIGUOUS:
-        ledger.accept_late_evidence(key, result)  # spurious ambiguity, healed by the owner
-        logger.warning("sakrit: %s was ambiguated mid-flight; healed by late evidence", key)
-        return result
+        if ledger.accept_late_evidence(key, result):
+            logger.warning("sakrit: %s was ambiguated mid-flight; healed by late evidence", key)
+            return result
+        # Hygiene: the accept no-op'd → between our read and write a *competing* accept
+        # settled it (AMBIGUOUS's only legal successor is SUCCEEDED). Adopt the recorded
+        # truth rather than blindly returning ours.
+        logger.info("sakrit: %s late-evidence lost the race; adopting the recorded result", key)
+        return ledger.recorded_result(key)
     if state is EffectState.SUCCEEDED:
         # A peer settled it → adopt the recorded truth. V-10: the takeover fp-gate already
         # bars a divergent peer from recording, but defend the "fingerprint is a guarantee on
@@ -217,8 +222,13 @@ def settle_leased(
                     stop.set()
                     thread.join()
         except BaseException as exc:
-            if isinstance(exc, clean_failures):
-                ledger.fence(key, token, EffectState.FAILED)
+            # Hygiene: a rejected FAILED write means we lost the lease mid-dispatch — a peer
+            # already took over. Don't discard the signal; log it (the peer's resolution
+            # stands, and this exception still propagates).
+            if isinstance(exc, clean_failures) and not ledger.fence(key, token, EffectState.FAILED):
+                logger.warning(
+                    "sakrit: %s clean-failure FAILED write was rejected (lease lost)", key
+                )
             raise
         finally:
             _current_key.reset(set_token)
@@ -363,8 +373,13 @@ async def settle_leased_async(
             finally:
                 await _stop_heartbeat_async(beat)  # stop before any post-dispatch write
         except BaseException as exc:
-            if isinstance(exc, clean_failures):
-                ledger.fence(key, token, EffectState.FAILED)
+            # Hygiene: a rejected FAILED write means we lost the lease mid-dispatch — a peer
+            # already took over. Don't discard the signal; log it (the peer's resolution
+            # stands, and this exception still propagates).
+            if isinstance(exc, clean_failures) and not ledger.fence(key, token, EffectState.FAILED):
+                logger.warning(
+                    "sakrit: %s clean-failure FAILED write was rejected (lease lost)", key
+                )
             raise
         finally:
             _current_key.reset(set_token)
