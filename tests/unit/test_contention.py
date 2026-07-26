@@ -7,6 +7,7 @@ the remaining Act III-M work.
 """
 
 import json
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -17,6 +18,11 @@ from sakrit.core.ledger import ClaimKind, Replayed
 from sakrit.core.reconcile import Reconciliation
 
 LEASE = 30.0
+
+
+def _age_row(led: SqliteLedger, key: str, delta: timedelta) -> None:
+    old = (datetime.now(timezone.utc) - delta).isoformat()
+    led.conn.execute("UPDATE effects SET created_at = ? WHERE key = ?", (old, key))
 
 
 def _stale_l1_row(led: SqliteLedger) -> None:
@@ -373,3 +379,160 @@ def test_forbidden_takeover_bumps_fence_and_row_is_write_once() -> None:
     # Even the current token cannot un-terminal the AMBIGUOUS row.
     assert led.fence("k", current, EffectState.EXECUTING) is False
     assert led.state_of("k") is EffectState.AMBIGUOUS
+
+
+def test_leased_l2_takeover_within_ttl_redispatches() -> None:
+    # An L2 EXECUTING leftover taken over within the provider key-TTL → re-dispatch is
+    # safe (the provider still dedups) → PROCEED.
+    led = _led()
+    led.claim_leased(
+        "k",
+        "s",
+        "t",
+        "fp",
+        owner="A",
+        now=100.0,
+        lease_seconds=LEASE,
+        provider_dedup=True,
+        provider_ttl_s=3600,
+    )
+    led.fence("k", 1, EffectState.EXECUTING)
+    b = led.claim_leased(
+        "k",
+        "s",
+        "t",
+        "fp",
+        owner="B",
+        now=200.0,
+        lease_seconds=LEASE,
+        provider_dedup=True,
+        provider_ttl_s=3600,
+    )
+    assert b.kind is ClaimKind.PROCEED
+
+
+def test_leased_l2_takeover_beyond_ttl_surfaces_ambiguous() -> None:
+    # P1-5 (leased): past the TTL the provider has forgotten the key → a re-dispatch would
+    # NOT dedup → surface, don't silently duplicate. Token is bumped (zombie fenced).
+    told: list[str] = []
+    led = SqliteLedger(on_ambiguous=told.append)
+    led.claim_leased(
+        "k",
+        "s",
+        "t",
+        "fp",
+        owner="A",
+        now=100.0,
+        lease_seconds=LEASE,
+        provider_dedup=True,
+        provider_ttl_s=3600,
+    )
+    led.fence("k", 1, EffectState.EXECUTING)
+    _age_row(led, "k", timedelta(hours=2))  # past the 1h TTL
+    b = led.claim_leased(
+        "k",
+        "s",
+        "t",
+        "fp",
+        owner="B",
+        now=200.0,
+        lease_seconds=LEASE,
+        provider_dedup=True,
+        provider_ttl_s=3600,
+    )
+    assert b.kind is ClaimKind.AMBIGUOUS
+    assert led.state_of("k") is EffectState.AMBIGUOUS
+    assert told == ["k"]
+    token = led.conn.execute("SELECT fencing_token FROM effects WHERE key = 'k'").fetchone()[0]
+    assert token == 2  # bumped, so a returning zombie is fenced
+
+
+def test_leased_l2r_takeover_beyond_ttl_still_reconciles() -> None:
+    # A reconcilable row (L2R) past the TTL still RECONCILES — reconcile is the authority
+    # ("did it happen?"), so the TTL does not force AMBIGUOUS here.
+    led = _led()
+    led.claim_leased(
+        "k",
+        "s",
+        "t",
+        "fp",
+        owner="A",
+        now=100.0,
+        lease_seconds=LEASE,
+        provider_dedup=True,
+        provider_ttl_s=3600,
+        reconcilable=True,
+    )
+    led.fence("k", 1, EffectState.EXECUTING)
+    _age_row(led, "k", timedelta(hours=2))
+    b = led.claim_leased(
+        "k",
+        "s",
+        "t",
+        "fp",
+        owner="B",
+        now=200.0,
+        lease_seconds=LEASE,
+        provider_dedup=True,
+        provider_ttl_s=3600,
+        reconcilable=True,
+    )
+    assert b.kind is ClaimKind.RECONCILE
+
+
+def test_leased_l2_claimed_leftover_beyond_ttl_still_proceeds() -> None:
+    # A CLAIMED leftover (crash BEFORE dispatch) never ran — re-dispatch is safe regardless
+    # of TTL, so it PROCEEDs even past the horizon.
+    led = _led()
+    led.claim_leased(
+        "k",
+        "s",
+        "t",
+        "fp",
+        owner="A",
+        now=100.0,
+        lease_seconds=LEASE,
+        provider_dedup=True,
+        provider_ttl_s=3600,
+    )  # left CLAIMED (not fenced to EXECUTING)
+    _age_row(led, "k", timedelta(hours=2))
+    b = led.claim_leased(
+        "k",
+        "s",
+        "t",
+        "fp",
+        owner="B",
+        now=200.0,
+        lease_seconds=LEASE,
+        provider_dedup=True,
+        provider_ttl_s=3600,
+    )
+    assert b.kind is ClaimKind.PROCEED
+
+
+def test_leased_l2_unbounded_ttl_takeover_proceeds() -> None:
+    # provider_ttl_s=None → unbounded → the prior behavior (always re-dispatch) is preserved.
+    led = _led()
+    led.claim_leased(
+        "k",
+        "s",
+        "t",
+        "fp",
+        owner="A",
+        now=100.0,
+        lease_seconds=LEASE,
+        provider_dedup=True,
+    )
+    led.fence("k", 1, EffectState.EXECUTING)
+    _age_row(led, "k", timedelta(days=30))
+    b = led.claim_leased(
+        "k",
+        "s",
+        "t",
+        "fp",
+        owner="B",
+        now=200.0,
+        lease_seconds=LEASE,
+        provider_dedup=True,
+    )
+    assert b.kind is ClaimKind.PROCEED

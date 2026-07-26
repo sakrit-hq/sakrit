@@ -58,6 +58,7 @@ def settle_leased(
     args: tuple[object, ...] = (),
     kwargs: Mapping[str, object] | None = None,
     provider_key_param: str | None = None,
+    provider_ttl_s: float | None = None,
     clean_failures: tuple[type[BaseException], ...] = (),
     reconcilable: bool = False,
     reconcile: Callable[[str], Reconciliation] | None = None,
@@ -85,6 +86,7 @@ def settle_leased(
             owner=ledger.owner,
             lease_seconds=lease_seconds,
             provider_dedup=provider_key_param is not None,
+            provider_ttl_s=provider_ttl_s,
             reconcilable=reconcilable,
         )
 

@@ -492,6 +492,7 @@ class SqliteLedger:
         lease_seconds: float,
         now: float | None = None,
         provider_dedup: bool = False,
+        provider_ttl_s: float | None = None,
         reconcilable: bool = False,
     ) -> Claim:
         """Atomic lease-based claim (multi-worker).
@@ -500,8 +501,10 @@ class SqliteLedger:
         expired lease is a presumed-dead owner → **takeover by ladder**: a pre-
         dispatch (``CLAIMED``) row or an L2/L1 ``EXECUTING`` row is re-owned with a
         bumped fencing token; an L0 ``EXECUTING`` row cannot be safely retried, so it
-        surfaces ``AMBIGUOUS`` (forbidden takeover). Fencing makes a returning zombie
-        harmless: its stale-token writes are rejected (see :meth:`fence`).
+        surfaces ``AMBIGUOUS`` (forbidden takeover). An L2 ``EXECUTING`` row past its
+        provider key-TTL also surfaces ``AMBIGUOUS`` — a re-dispatch would no longer
+        dedup (P1-5, leased variant). Fencing makes a returning zombie harmless: its
+        stale-token writes are rejected (see :meth:`fence`).
         """
         if now is None:
             now = self._db_now()  # DB clock only (Q21)
@@ -509,15 +512,15 @@ class SqliteLedger:
         try:
             row = self.conn.execute(
                 "SELECT state, result, fingerprint, result_ref, fencing_token, lease_owner, "
-                "lease_expires FROM effects WHERE key = ?",
+                "lease_expires, created_at, provider_ttl_s FROM effects WHERE key = ?",
                 (key,),
             ).fetchone()
             if row is None:
                 token = 1
                 self.conn.execute(
                     "INSERT INTO effects (key, scope, tool, fingerprint, state, provider_dedup, "
-                    "reconcilable, created_at, fencing_token, lease_owner, lease_expires) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "provider_ttl_s, reconcilable, created_at, fencing_token, lease_owner, "
+                    "lease_expires) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         key,
                         scope,
@@ -525,6 +528,7 @@ class SqliteLedger:
                         fingerprint,
                         EffectState.CLAIMED.value,
                         int(provider_dedup),
+                        provider_ttl_s,
                         int(reconcilable),
                         _now(),
                         token,
@@ -536,6 +540,7 @@ class SqliteLedger:
             else:
                 state = EffectState(row[0])
                 token, lease_owner, lease_expires = row[4], row[5], row[6]
+                created_at, row_ttl_s = row[7], row[8]
                 if state is EffectState.SUCCEEDED:
                     result = (
                         Replayed(key, row[3])
@@ -558,6 +563,24 @@ class SqliteLedger:
                         (EffectState.AMBIGUOUS.value, _now(), key),
                     )
                     self._tell_ambiguous(key, "L0 lease expired mid-dispatch (forbidden takeover)")
+                    claim = Claim(ClaimKind.AMBIGUOUS)
+                elif (
+                    state is EffectState.EXECUTING
+                    and provider_dedup
+                    and not reconcilable
+                    and not _within_ttl(created_at, row_ttl_s)
+                ):
+                    # P1-5 (leased variant): an L2 row taken over *past its provider
+                    # key-TTL* — the provider has forgotten the key, so re-dispatch would
+                    # NOT dedup → silent duplicate. Surface instead (same shape as the L0
+                    # forbidden takeover: bump the fence, tell). Within TTL falls through
+                    # to PROCEED; a reconcilable (L2R) row reconciles regardless.
+                    self.conn.execute(
+                        "UPDATE effects SET state = ?, fencing_token = fencing_token + 1, "
+                        "settled_at = ? WHERE key = ?",
+                        (EffectState.AMBIGUOUS.value, _now(), key),
+                    )
+                    self._tell_ambiguous(key, "L2 leftover past provider key TTL (leased takeover)")
                     claim = Claim(ClaimKind.AMBIGUOUS)
                 else:
                     # Expired lease on a re-ownable row → take over, bump the fence.

@@ -98,6 +98,25 @@ def test_leased_engine_concurrent_workers_fire_once(tmp_path: Path) -> None:
     assert len(results) == n and all(r == "sent" for r in results.values())  # all got the result
 
 
+def test_leased_engine_captures_provider_ttl(tmp_path: Path) -> None:
+    # P1-5 (leased): the TTL flows decl → guard → settle_leased → claim_leased onto the row,
+    # so a later L2 takeover past the horizon can surface instead of silently duplicating.
+    led = SqliteLedger(tmp_path / "l.sqlite", multi_worker=True)
+    sk = Sakrit(led, secret=SECRET)
+    decl = EffectDecl(
+        "pay.charge", {"amt": ArgClass.IDENTITY}, provider_key_param="idk", provider_ttl_s=86400
+    )
+
+    @sk.effect(decl, key="o1")
+    def charge(amt: int) -> dict[str, str]:
+        return {"id": "c1"}
+
+    charge(amt=100)
+    stored = led.conn.execute("SELECT provider_ttl_s FROM effects").fetchone()[0]
+    assert stored == 86400
+    led.close()
+
+
 def test_guard_async_refuses_in_leased_mode(tmp_path: Path) -> None:
     # settle_leased is a blocking sync loop and cannot await an async tool; refuse loudly
     # rather than run the coroutine unawaited (which would re-open the P1-1 hole).
