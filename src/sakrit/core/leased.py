@@ -70,7 +70,14 @@ def settle_leased(
 
         # PROCEED — we hold the lease and a fencing token.
         token = claim.fencing_token
-        ledger.fence(key, token, EffectState.EXECUTING)  # write-ahead, fenced
+        if not ledger.fence(key, token, EffectState.EXECUTING):  # write-ahead, fenced
+            # P1-3: the fence no-op'd — our token is stale, so a peer took the lease over
+            # between claim and here (the exact stop-the-world window fencing exists for).
+            # We have dispatched *nothing*; abort before the effect and re-resolve. The
+            # new owner holds a live lease → the next claim BUSY-waits for its result.
+            if time.time() > deadline:
+                raise AmbiguousOutcome(f"{key}: lost the lease before dispatch and timed out")
+            continue
         seam("after_mark_executing")
         set_token = _current_key.set(key)
         try:

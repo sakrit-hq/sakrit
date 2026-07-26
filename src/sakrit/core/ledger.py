@@ -488,11 +488,20 @@ class SqliteLedger:
         it no longer owns.
         """
         terminal = state in (EffectState.SUCCEEDED, EffectState.FAILED, EffectState.AMBIGUOUS)
-        encoded = json.dumps(result) if state is EffectState.SUCCEEDED else None
+        encoded: str | None = None
+        marker: str | None = None
+        if state is EffectState.SUCCEEDED:
+            # Q6 (P1-4): execution truth outranks result fidelity. If the result won't
+            # serialize, fence SUCCEEDED with a marker (replay returns it) — never raise,
+            # which would leave a *succeeded* effect EXECUTING to be re-fired on takeover.
+            try:
+                encoded = json.dumps(result)
+            except (TypeError, ValueError):
+                marker = f"unserializable:{type(result).__name__}"
         cur = self.conn.execute(
-            "UPDATE effects SET state = ?, result = ?, settled_at = ? "
+            "UPDATE effects SET state = ?, result = ?, result_ref = ?, settled_at = ? "
             "WHERE key = ? AND fencing_token = ?",
-            (state.value, encoded, _now() if terminal else None, key, token),
+            (state.value, encoded, marker, _now() if terminal else None, key, token),
         )
         return cur.rowcount > 0
 

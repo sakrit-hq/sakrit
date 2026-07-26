@@ -6,8 +6,12 @@ this into a concurrent settle loop over Postgres, plus true-concurrency chaos, i
 the remaining Act III-M work.
 """
 
+import json
+
 from sakrit.core import EffectState, SqliteLedger
-from sakrit.core.ledger import ClaimKind
+from sakrit.core.errors import AmbiguousOutcome
+from sakrit.core.leased import settle_leased
+from sakrit.core.ledger import ClaimKind, Replayed
 
 LEASE = 30.0
 
@@ -94,3 +98,78 @@ def test_late_evidence_self_heals_ambiguity() -> None:
     assert led.state_of("k") is EffectState.SUCCEEDED
     # A second late-evidence write is a no-op (row no longer AMBIGUOUS).
     assert led.accept_late_evidence("k", result="again") is False
+
+
+def test_fence_succeeded_unserializable_records_marker_not_raises() -> None:
+    # P1-4: Q6 in the leased path — an unserializable result must not raise after the
+    # effect ran (which would leave a *succeeded* row EXECUTING, re-fired on takeover).
+    led = _led()
+    a = led.claim_leased("k", "s", "t", "fp", owner="A", now=100.0, lease_seconds=LEASE)
+    led.fence("k", a.fencing_token, EffectState.EXECUTING)
+
+    class Weird:  # not JSON-serializable
+        pass
+
+    assert led.fence("k", a.fencing_token, EffectState.SUCCEEDED, result=Weird()) is True
+    assert led.state_of("k") is EffectState.SUCCEEDED  # recorded, not left EXECUTING
+    # Replay returns the marker, never a raise.
+    replay = led.claim_leased("k", "s", "t", "fp", owner="B", now=110.0, lease_seconds=LEASE)
+    assert replay.kind is ClaimKind.REPLAY
+    assert isinstance(replay.result, Replayed)
+
+
+def test_settle_leased_aborts_dispatch_when_lease_lost_before_fence() -> None:
+    # P1-3: if fence(EXECUTING) no-ops (our token went stale — a peer took over between
+    # claim and fence), settle_leased must NOT dispatch; it re-resolves and replays.
+    calls: list[int] = []
+
+    def fn() -> str:
+        calls.append(1)
+        return "A-result"
+
+    class PeerStealsBeforeFence(SqliteLedger):
+        stolen = False
+
+        def fence(self, key, token, state, *, result=None):  # type: ignore[no-untyped-def]
+            if state is EffectState.EXECUTING and not self.stolen:
+                self.stolen = True
+                # A peer takes over and completes the effect before our fence lands.
+                self.conn.execute(
+                    "UPDATE effects SET fencing_token = fencing_token + 1, state = ?, "
+                    "result = ?, settled_at = ? WHERE key = ?",
+                    (EffectState.SUCCEEDED.value, json.dumps("peer-result"), 0, key),
+                )
+            return super().fence(key, token, state, result=result)
+
+    led = PeerStealsBeforeFence()
+    out = settle_leased(led, key="k", scope="s", tool="t", fingerprint="fp", fn=fn)
+    assert out == "peer-result"  # we replayed the peer's result
+    assert calls == []  # our fn never dispatched — exactly-once held
+
+
+def test_settle_leased_times_out_if_lease_lost_and_never_resolves() -> None:
+    # Belt: if the fence is lost but no peer result ever appears, we surface, not hang.
+    class AlwaysLosesFence(SqliteLedger):
+        def fence(self, key, token, state, *, result=None):  # type: ignore[no-untyped-def]
+            if state is EffectState.EXECUTING:
+                # Bump the token so our fence is forever stale, but record nothing.
+                self.conn.execute(
+                    "UPDATE effects SET fencing_token = fencing_token + 1 WHERE key = ?", (key,)
+                )
+            return super().fence(key, token, state, result=result)
+
+    led = AlwaysLosesFence()
+    try:
+        settle_leased(
+            led,
+            key="k",
+            scope="s",
+            tool="t",
+            fingerprint="fp",
+            fn=lambda: 1,
+            wait_timeout=0.05,
+            poll=0.01,
+        )
+        raise AssertionError("expected AmbiguousOutcome")
+    except AmbiguousOutcome:
+        pass
