@@ -29,3 +29,6 @@ uv.lock
 
 # Office temp files
 ~$*
+
+# Docs (kept local, not tracked)
+docs/
