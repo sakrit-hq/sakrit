@@ -29,7 +29,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 
-from sakrit.core.errors import SakritError
+from sakrit.core.errors import EffectInFlightError
 
 
 class EffectState(Enum):
@@ -54,6 +54,20 @@ class Claim:
     fingerprint: str | None = None
 
 
+@dataclass(frozen=True)
+class Replayed:
+    """Returned on replay of an effect whose result could not be serialized.
+
+    The effect *happened*; its return value was not storable, so the ledger kept a
+    marker instead. Execution truth outranks result fidelity — the caller handles
+    the marker (the future rehydrate/marker machinery, arriving early). See
+    ``docs/design.md`` §10.
+    """
+
+    key: str
+    note: str
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -67,6 +81,7 @@ CREATE TABLE IF NOT EXISTS effects (
   state          TEXT NOT NULL,
   provider_dedup INTEGER NOT NULL DEFAULT 0,
   result         TEXT,
+  result_ref     TEXT,
   error          TEXT,
   created_at     TEXT NOT NULL,
   settled_at     TEXT
@@ -106,7 +121,8 @@ class SqliteLedger:
         self.conn.execute("BEGIN IMMEDIATE")
         try:
             row = self.conn.execute(
-                "SELECT state, result, fingerprint FROM effects WHERE key = ?", (key,)
+                "SELECT state, result, fingerprint, result_ref FROM effects WHERE key = ?",
+                (key,),
             ).fetchone()
 
             if row is None:
@@ -129,22 +145,26 @@ class SqliteLedger:
             else:
                 state = EffectState(row[0])
                 if state is EffectState.SUCCEEDED:
-                    result = None if row[1] is None else json.loads(row[1])
+                    result: object
+                    if row[3] is not None:  # result_ref → the result was unserializable
+                        result = Replayed(key=key, note=row[3])
+                    else:
+                        result = None if row[1] is None else json.loads(row[1])
                     claim = Claim(ClaimKind.REPLAY, result=result, fingerprint=row[2])
                 elif state is EffectState.AMBIGUOUS:
                     claim = Claim(ClaimKind.AMBIGUOUS)
-                elif state is EffectState.EXECUTING and not provider_dedup:
-                    # L0: a crash landed in the ambiguous window. Surface as
-                    # AMBIGUOUS — never silently re-execute a non-idempotent effect.
-                    self.conn.execute(
-                        "UPDATE effects SET state = ?, settled_at = ? WHERE key = ?",
-                        (EffectState.AMBIGUOUS.value, _now(), key),
+                elif state is EffectState.EXECUTING:
+                    # No death-evidence in the claim path (single-worker ≠ single-
+                    # thread) → refuse to transition. Recovery is the sole owner of
+                    # EXECUTING → {AMBIGUOUS | re-claim}. (Applies to L2 too: one rule.)
+                    raise EffectInFlightError(
+                        f"{key}: row is EXECUTING — a concurrent guard of this key, or a "
+                        "missed recovery. This transition belongs to recover() (run at "
+                        "startup), not to claim."
                     )
-                    claim = Claim(ClaimKind.AMBIGUOUS)
                 else:
-                    # Re-own and retry: CLAIMED (crash before dispatch), FAILED, or
-                    # an L2 EXECUTING leftover (a retry with the same provider key
-                    # deduplicates, so re-dispatch is safe).
+                    # Re-own and retry: CLAIMED (crash before dispatch) or a declared
+                    # clean FAILED — the effect provably never completed.
                     self.conn.execute(
                         "UPDATE effects SET state = ?, fingerprint = ? WHERE key = ?",
                         (EffectState.CLAIMED.value, fingerprint, key),
@@ -163,16 +183,19 @@ class SqliteLedger:
         self._transition(key, EffectState.EXECUTING)
 
     def record_success(self, key: str, result: object) -> None:
+        # Execution truth outranks result fidelity: the effect happened. If the
+        # result won't serialize, record SUCCEEDED with a marker (replay returns the
+        # marker) — never raise here, which would leave a lie or a retriable state.
+        encoded: str | None
+        marker: str | None
         try:
-            encoded = json.dumps(result)
-        except (TypeError, ValueError) as exc:
-            raise SakritError(
-                f"result of {key} is not serializable ({exc}); declare a rehydrate "
-                "or marker in the tool's SED"
-            ) from exc
+            encoded, marker = json.dumps(result), None
+        except (TypeError, ValueError):
+            encoded, marker = None, f"unserializable:{type(result).__name__}"
         self.conn.execute(
-            "UPDATE effects SET state = ?, result = ?, settled_at = ? WHERE key = ?",
-            (EffectState.SUCCEEDED.value, encoded, _now(), key),
+            "UPDATE effects SET state = ?, result = ?, result_ref = ?, settled_at = ? "
+            "WHERE key = ?",
+            (EffectState.SUCCEEDED.value, encoded, marker, _now(), key),
         )
 
     def record_failure(self, key: str, error: BaseException) -> None:

@@ -17,13 +17,14 @@ from sakrit.core.errors import (
     AmbiguousOutcome,
     CanonicalizationError,
     DivergentRetry,
+    EffectInFlightError,
     NoCoordinateError,
     RegeneratedDuplicate,
     SakritError,
 )
 from sakrit.core.fingerprint import fingerprint
 from sakrit.core.keys import positional_key
-from sakrit.core.ledger import EffectState, SqliteLedger
+from sakrit.core.ledger import EffectState, Replayed, SqliteLedger
 from sakrit.core.settle import settle
 
 __all__ = [
@@ -34,9 +35,11 @@ __all__ = [
     "Coordinate",
     "DivergentRetry",
     "EffectDecl",
+    "EffectInFlightError",
     "EffectState",
     "NoCoordinateError",
     "RegeneratedDuplicate",
+    "Replayed",
     "RuntimeAdapter",
     "SakritError",
     "SqliteLedger",

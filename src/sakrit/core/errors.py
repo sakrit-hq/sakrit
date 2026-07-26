@@ -43,6 +43,19 @@ class AmbiguousOutcome(SakritError):
     """
 
 
+class EffectInFlightError(SakritError):
+    """Claimed a key whose row is ``EXECUTING`` — but the claim path has no evidence
+    of whether the executor died or is alive.
+
+    Two possibilities, both named to the caller: a *concurrent guard of the same
+    key* (a key-design bug — same coordinate reached twice at once), or a *missed
+    recovery* (run ``recover()`` at startup). The ``EXECUTING → {AMBIGUOUS |
+    re-claim}`` transition needs death-evidence, which only recovery has — so claim
+    refuses to make it. See ``docs/design.md`` (the "no transition without its
+    evidence" rule).
+    """
+
+
 class CanonicalizationError(SakritError):
     """An argument value has no defined canonical form.
 

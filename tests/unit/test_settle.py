@@ -9,7 +9,9 @@ from sakrit.core import (
     ArgClass,
     DivergentRetry,
     EffectDecl,
+    EffectInFlightError,
     EffectState,
+    Replayed,
     SqliteLedger,
     fingerprint,
     positional_key,
@@ -94,7 +96,7 @@ def test_divergent_identity_raises_and_does_not_execute() -> None:
     assert executed is False
 
 
-def test_crash_in_window_surfaces_ambiguous() -> None:
+def test_claim_on_executing_refuses_then_recovery_surfaces_ambiguous() -> None:
     led = SqliteLedger()
     key = _key()
     fp = _fp(to="a@x.com")
@@ -102,9 +104,16 @@ def test_crash_in_window_surfaces_ambiguous() -> None:
     led.claim(key, "run-1", "email.send", fp)
     led.mark_executing(key)
 
+    # A claim can't distinguish a crash artifact from a live executor → it refuses.
+    with pytest.raises(EffectInFlightError):
+        settle(led, key=key, scope="run-1", tool="email.send", fingerprint=fp, fn=lambda: "x")
+    assert led.state_of(key) is EffectState.EXECUTING  # claim made no transition
+
+    # Recovery has death-evidence and owns the transition.
+    assert led.recover() == [key]
+    assert led.state_of(key) is EffectState.AMBIGUOUS
     with pytest.raises(AmbiguousOutcome):
         settle(led, key=key, scope="run-1", tool="email.send", fingerprint=fp, fn=lambda: "x")
-    assert led.state_of(key) is EffectState.AMBIGUOUS
 
 
 def test_recover_moves_executing_to_ambiguous() -> None:
@@ -130,9 +139,13 @@ def test_undeclared_exception_is_ambiguous_not_failed() -> None:
         settle(led, key=key, scope="run-1", tool="email.send", fingerprint=fp, fn=boom)
     assert led.state_of(key) is EffectState.EXECUTING  # not FAILED
 
+    # In-process, a retry hits the refusing claim (no recovery has run yet)…
+    with pytest.raises(EffectInFlightError):
+        settle(led, key=key, scope="run-1", tool="email.send", fingerprint=fp, fn=lambda: "ok")
+    # …and after recovery the ambiguity is surfaced, never silently re-executed.
+    assert led.recover() == [key]
     with pytest.raises(AmbiguousOutcome):
         settle(led, key=key, scope="run-1", tool="email.send", fingerprint=fp, fn=lambda: "ok")
-    assert led.state_of(key) is EffectState.AMBIGUOUS
 
 
 def test_declared_clean_failure_is_reattemptable() -> None:
@@ -167,6 +180,33 @@ def test_declared_clean_failure_is_reattemptable() -> None:
     )
     assert out == "ok"
     assert led.state_of(key) is EffectState.SUCCEEDED
+
+
+def test_unserializable_result_records_succeeded_and_replays_as_marker() -> None:
+    # Execution truth outranks result fidelity: an unstorable result must still
+    # record SUCCEEDED (never FAILED), and replay must not re-execute.
+    led = SqliteLedger()
+    key = _key()
+    fp = _fp(to="a@x.com")
+
+    class Handle:  # not JSON-serializable
+        pass
+
+    handle = Handle()
+    calls = 0
+
+    def effect() -> Handle:
+        nonlocal calls
+        calls += 1
+        return handle
+
+    first = settle(led, key=key, scope="run-1", tool="email.send", fingerprint=fp, fn=effect)
+    assert first is handle  # the real object on first execution
+    assert led.state_of(key) is EffectState.SUCCEEDED  # NOT FAILED — the effect happened
+
+    replayed = settle(led, key=key, scope="run-1", tool="email.send", fingerprint=fp, fn=effect)
+    assert isinstance(replayed, Replayed)  # a marker, not the (unstorable) object
+    assert calls == 1  # replay did not re-execute
 
 
 def test_durable_across_reconnect(tmp_path: "object") -> None:
