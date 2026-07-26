@@ -16,6 +16,7 @@ from collections.abc import Callable, Mapping
 from sakrit.core.context import _current_key
 from sakrit.core.errors import AmbiguousOutcome, DivergentRetry
 from sakrit.core.ledger import ClaimKind, SqliteLedger
+from sakrit.core.seams import seam
 
 
 def settle(
@@ -56,10 +57,13 @@ def settle(
         )
 
     # PROCEED — we own the claim.
+    seam("after_claim")
     ledger.mark_executing(key)  # durable BEFORE dispatch
+    seam("after_mark_executing")
     token = _current_key.set(key)  # the tool may read this via sakrit.current_key()
     try:
         result = fn(*args, **dict(kwargs or {}))
+        seam("after_dispatch")
     except BaseException as exc:
         # A *declared* clean failure proves the effect did not execute → FAILED
         # (safely re-claimable). Every other exception is AMBIGUOUS: the effect may
@@ -68,8 +72,10 @@ def settle(
         # unclassified exception into a retriable FAILED, which mints a duplicate.
         if isinstance(exc, clean_failures):
             ledger.record_failure(key, exc)
+            seam("after_record_failure")
         raise
     finally:
         _current_key.reset(token)
     ledger.record_success(key, result)
+    seam("after_record")
     return result

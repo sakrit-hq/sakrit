@@ -74,8 +74,9 @@ files = ["src", "tests"]
 python_version = "3.10"
 strict = true
 # Integration tests drive a third-party framework dynamically (LangGraph's
-# heavily-overloaded invoke); not worth fighting its stubs under strict mode.
-exclude = ["tests/integration/"]
+# heavily-overloaded invoke); chaos tests drive subprocesses + a durable fake
+# world. Neither is worth fighting under strict mode; both are verified by running.
+exclude = ["tests/integration/", "tests/chaos/"]
 
 [[tool.mypy.overrides]]
 module = ["langgraph.*"]

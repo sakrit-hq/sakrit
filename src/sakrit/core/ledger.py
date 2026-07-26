@@ -31,6 +31,7 @@ from enum import Enum
 from pathlib import Path
 
 from sakrit.core.errors import EffectInFlightError, SakritError
+from sakrit.core.seams import seam
 
 try:
     import fcntl  # POSIX advisory locking
@@ -288,6 +289,7 @@ class SqliteLedger:
                     (EffectState.AMBIGUOUS.value, _now(), key),
                 )
                 ambiguous.append(key)
+            seam("during_recovery")  # kill mid-scan; recovery must be idempotent over itself
         return ambiguous
 
     def keys_in(self, state: EffectState) -> Iterable[str]:
