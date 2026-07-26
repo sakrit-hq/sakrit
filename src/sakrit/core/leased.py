@@ -22,7 +22,8 @@ from collections.abc import Callable, Mapping
 
 from sakrit.core.context import _current_key
 from sakrit.core.errors import AmbiguousOutcome, DivergentRetry, SakritError
-from sakrit.core.ledger import ClaimKind, EffectState, SqliteLedger
+from sakrit.core.ledger import ClaimKind, EffectState
+from sakrit.core.protocols import LeasedLedger
 from sakrit.core.reconcile import Reconciliation, Verdict
 from sakrit.core.seams import seam
 
@@ -32,7 +33,7 @@ logger = logging.getLogger("sakrit")
 _DISPATCH = object()
 
 
-def _record_success_fenced(ledger: SqliteLedger, key: str, token: int, result: object) -> object:
+def _record_success_fenced(ledger: LeasedLedger, key: str, token: int, result: object) -> object:
     """Record SUCCEEDED under our fence; if the fenced write is rejected, self-heal (V-7).
 
     A rejected terminal fence means we lost ownership mid-flight (the heartbeat failed and
@@ -56,7 +57,7 @@ def _record_success_fenced(ledger: SqliteLedger, key: str, token: int, result: o
 
 
 def _reconcile_on_takeover(
-    ledger: SqliteLedger,
+    ledger: LeasedLedger,
     key: str,
     token: int,
     reconcile: Callable[[str], Reconciliation] | None,
@@ -80,7 +81,7 @@ def _reconcile_on_takeover(
 
 
 def _start_heartbeat(
-    ledger: SqliteLedger, key: str, lease_seconds: float, interval: float | None
+    ledger: LeasedLedger, key: str, lease_seconds: float, interval: float | None
 ) -> tuple[threading.Event, threading.Thread] | None:
     """Extend our lease while ``fn`` runs, so a slow-but-alive owner is not presumed
     dead (P3-5). Only in multi-worker mode: single-worker has no lease contention, and
@@ -110,7 +111,7 @@ def _start_heartbeat(
 
 
 def settle_leased(
-    ledger: SqliteLedger,
+    ledger: LeasedLedger,
     *,
     key: str,
     scope: str,
@@ -214,7 +215,7 @@ def settle_leased(
 
 
 def _start_heartbeat_async(
-    ledger: SqliteLedger, key: str, lease_seconds: float, interval: float | None
+    ledger: LeasedLedger, key: str, lease_seconds: float, interval: float | None
 ) -> tuple[asyncio.Event, asyncio.Task[None]] | None:
     """The async twin of :func:`_start_heartbeat` (P3-5). Renews the lease from an asyncio
     task on the event loop — no thread, so the SQLite connection is never touched from a
@@ -271,7 +272,7 @@ async def _stop_heartbeat_async(
 
 
 async def settle_leased_async(
-    ledger: SqliteLedger,
+    ledger: LeasedLedger,
     *,
     key: str,
     scope: str,

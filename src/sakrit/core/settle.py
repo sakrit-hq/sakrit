@@ -22,7 +22,8 @@ from collections.abc import Callable, Mapping
 
 from sakrit.core.context import _current_key
 from sakrit.core.errors import AmbiguousOutcome, DivergentRetry, SakritError
-from sakrit.core.ledger import ClaimKind, SqliteLedger
+from sakrit.core.ledger import ClaimKind
+from sakrit.core.protocols import Ledger
 from sakrit.core.seams import seam
 
 # Sentinel: the claim decided PROCEED (vs a replayed result, which may itself be None).
@@ -30,7 +31,7 @@ _PROCEED = object()
 
 
 def _decide(
-    ledger: SqliteLedger,
+    ledger: Ledger,
     *,
     key: str,
     scope: str,
@@ -71,7 +72,7 @@ def _decide(
 
 
 def settle(
-    ledger: SqliteLedger,
+    ledger: Ledger,
     *,
     key: str,
     scope: str,
@@ -141,7 +142,7 @@ def settle(
 
 
 async def settle_async(
-    ledger: SqliteLedger,
+    ledger: Ledger,
     *,
     key: str,
     scope: str,

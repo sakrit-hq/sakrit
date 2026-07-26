@@ -26,7 +26,7 @@ from sakrit.core.errors import SakritError
 from sakrit.core.fingerprint import fingerprint
 from sakrit.core.keys import positional_key
 from sakrit.core.leased import settle_leased, settle_leased_async
-from sakrit.core.ledger import SqliteLedger
+from sakrit.core.protocols import LeasedLedger
 from sakrit.core.reconcile import Verdict
 from sakrit.core.settle import settle, settle_async
 
@@ -101,7 +101,7 @@ class Sakrit:
 
     def __init__(
         self,
-        ledger: SqliteLedger,
+        ledger: LeasedLedger,
         *,
         secret: bytes,
         adapter: RuntimeAdapter | None = None,
