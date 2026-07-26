@@ -142,10 +142,14 @@ class Sakrit:
         # single worker. Against a multi-worker ledger it would ambiguate/re-own live
         # peers' rows, so it MUST NOT run there; the leased protocol recovers lazily
         # (claim_leased takes over a row by ladder once its lease expires).
+        # P1-15 sliver: set the flag only *after* recovery succeeds. Setting it first meant a
+        # DB-level error in recover()/pending_reconcile() permanently disabled recovery for the
+        # process. recover() is idempotent (it re-scans EXECUTING), so retrying on the next
+        # guard is safe — and a persistently-broken ledger fails loud every call, not silently.
         if not self._recovered:
-            self._recovered = True
             if not self._leased:
                 self.recover()
+            self._recovered = True
 
         # Merge an active sk.step(...) block: an explicit arg wins; else the context
         # supplies it (P4-1 — distinct occurrences for repeats at one call site).
@@ -301,11 +305,18 @@ class Sakrit:
             try:
                 rec = decl.reconcile(key)
             except Exception:  # noqa: BLE001 — P1-15: one tool's failure must not strand
-                # A raising reconcile (e.g. the provider is unreachable) must not abandon
-                # the rest of the loop. Surface *this* key (can't determine → AMBIGUOUS)
-                # and carry on resolving the others.
-                logger.exception("sakrit: reconcile for %s raised during recovery; surfacing", key)
-                self._ledger.ambiguate(key)
+                # V-12: a *raised* reconcile means we couldn't *ask* — a transient failure
+                # (DNS, timeout, a provider mid-deploy), NOT an answered "outcome unknown".
+                # Do NOT ambiguate (AMBIGUOUS is terminal with no in-band exit, so a 30-second
+                # startup blip would permanently strand this tool's whole backlog). Skip: leave
+                # the row EXECUTING and warn — in-process claims refuse EXECUTING loudly, and the
+                # next process restart re-attempts the reconcile, so transient failures self-heal.
+                # Only an *answered* UNKNOWN (below) pays the ambiguity cost.
+                logger.warning(
+                    "sakrit: reconcile for %s raised (transient?) — left EXECUTING for the next "
+                    "recovery, not ambiguated",
+                    key,
+                )
                 continue
             if rec.verdict is Verdict.SETTLED:
                 self._ledger.settle_reconciled(key, rec.result)

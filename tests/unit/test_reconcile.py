@@ -156,7 +156,8 @@ def test_l2r_reconcile_removes_the_ttl_cliff() -> None:
 
 def test_recover_isolates_a_raising_reconcile() -> None:
     # P1-15: one tool's reconcile raising (provider unreachable) must not strand the other
-    # pending rows. The bad key surfaces AMBIGUOUS; the good key still resolves.
+    # pending rows. V-12: a *raised* reconcile is transient — leave it EXECUTING (retried at
+    # the next recovery), NOT ambiguated (which is permanent). The good key still resolves.
     led = SqliteLedger()
     sk = Sakrit(led, secret=SECRET)
 
@@ -178,5 +179,63 @@ def test_recover_isolates_a_raising_reconcile() -> None:
 
     sk.recover()
 
-    assert led.state_of("kA") is EffectState.AMBIGUOUS  # raise isolated → surfaced
+    assert led.state_of("kA") is EffectState.EXECUTING  # transient raise → retried next time
     assert led.state_of("kB") is EffectState.SUCCEEDED  # the other row still resolved
+
+
+def test_v12_transient_reconcile_error_self_heals_on_next_recovery() -> None:
+    # V-12: a raised reconcile leaves the row EXECUTING; the *next* recovery (fresh engine,
+    # provider back up) reconciles it — a startup blip does not permanently strand the row.
+    led = SqliteLedger()
+    provider = QueryableProvider()
+    key = _key("blip")
+    led.claim(key, "global", "crm.ticket", "fp", reconcilable=True)
+    led.mark_executing(key)
+    provider.settled[key] = "record"  # the effect actually landed
+
+    calls = {"n": 0}
+
+    def flaky(k: str) -> Reconciliation:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("provider mid-deploy")  # transient at first recovery
+        return Reconciliation.settled(provider.settled[k])
+
+    decl = EffectDecl("crm.ticket", {"subject": ArgClass.IDENTITY}, reconcile=flaky)
+
+    sk1 = Sakrit(led, secret=SECRET)
+    sk1._registry["crm.ticket"] = decl
+    sk1.recover()
+    assert led.state_of(key) is EffectState.EXECUTING  # not ambiguated by the blip
+
+    sk2 = Sakrit(led, secret=SECRET)  # fresh process; provider recovered
+    sk2._registry["crm.ticket"] = decl
+    sk2.recover()
+    assert led.state_of(key) is EffectState.SUCCEEDED  # self-healed
+
+
+def test_p1_15_sliver_recover_retried_if_it_raises() -> None:
+    # P1-15 sliver: a DB-level error in recover() must not permanently disable recovery —
+    # _recovered is set only after recover() succeeds, so the next guard retries it.
+    calls = {"n": 0}
+
+    class FlakyRecover(SqliteLedger):
+        def recover(self):  # type: ignore[no-untyped-def]
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("transient DB error")
+            return super().recover()
+
+    led = FlakyRecover()
+    sk = Sakrit(led, secret=SECRET)
+
+    @sk.effect(EffectDecl("email.send", {"to": ArgClass.IDENTITY}), key="k")
+    def send(to: str) -> str:
+        return "ok"
+
+    import pytest
+
+    with pytest.raises(RuntimeError):
+        send(to="a@x.com")  # first guard: recover() raises → propagates, _recovered stays False
+    assert send(to="a@x.com") == "ok"  # second guard: recover() retried and succeeded
+    assert calls["n"] == 2
