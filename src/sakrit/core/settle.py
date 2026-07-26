@@ -31,6 +31,7 @@ def settle(
     kwargs: Mapping[str, object] | None = None,
     provider_key_param: str | None = None,
     clean_failures: tuple[type[BaseException], ...] = (),
+    reconcilable: bool = False,
 ) -> object:
     """Run ``fn`` exactly once for ``key`` (durably), or return its saved result.
 
@@ -40,7 +41,12 @@ def settle(
     duration of the dispatch, so the tool's signature stays clean.
     """
     claim = ledger.claim(
-        key, scope, tool, fingerprint, provider_dedup=provider_key_param is not None
+        key,
+        scope,
+        tool,
+        fingerprint,
+        provider_dedup=provider_key_param is not None,
+        reconcilable=reconcilable,
     )
 
     if claim.kind is ClaimKind.REPLAY:

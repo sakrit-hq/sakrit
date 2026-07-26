@@ -11,9 +11,11 @@ Act.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
+
+from sakrit.core.reconcile import Reconciliation
 
 
 class ArgClass(Enum):
@@ -43,10 +45,27 @@ class EffectDecl:
     validation errors before any I/O, a provider 4xx meaning "rejected, nothing
     done"). Only these record ``FAILED`` (safely re-claimable). Every other
     exception is treated as *ambiguous* — the effect may have landed."""
+    reconcile: Callable[[str], Reconciliation] | None = None
+    """A read-only query answering "did this effect happen?" for crash recovery.
+    Its presence makes the tool L1 (or L2R, with ``provider_key_param``)."""
+    on_absent: str = "surface"
+    """What recovery does when reconcile says ABSENT: ``surface`` (safe default for
+    irreversible effects — a lagging read can lie) or ``retry`` (re-claimable)."""
 
     @property
     def provider_dedup(self) -> bool:
         return self.provider_key_param is not None
+
+    @property
+    def level(self) -> str:
+        """The provider-cooperation rung, derived from declared capabilities."""
+        if self.provider_key_param and self.reconcile:
+            return "L2R"
+        if self.reconcile:
+            return "L1"
+        if self.provider_key_param:
+            return "L2"
+        return "L0"
 
     def class_of(self, arg: str) -> ArgClass:
         return self.classes.get(arg, self.default)

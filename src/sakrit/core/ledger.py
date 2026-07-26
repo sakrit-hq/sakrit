@@ -87,6 +87,7 @@ CREATE TABLE IF NOT EXISTS effects (
   fingerprint    TEXT NOT NULL,
   state          TEXT NOT NULL,
   provider_dedup INTEGER NOT NULL DEFAULT 0,
+  reconcilable   INTEGER NOT NULL DEFAULT 0,
   result         TEXT,
   result_ref     TEXT,
   error          TEXT,
@@ -173,7 +174,14 @@ class SqliteLedger:
 
     # --- the atomic claim -------------------------------------------------
     def claim(
-        self, key: str, scope: str, tool: str, fingerprint: str, *, provider_dedup: bool = False
+        self,
+        key: str,
+        scope: str,
+        tool: str,
+        fingerprint: str,
+        *,
+        provider_dedup: bool = False,
+        reconcilable: bool = False,
     ) -> Claim:
         """Atomically decide what to do with ``key`` and take ownership if we run it."""
         self.conn.execute("BEGIN IMMEDIATE")
@@ -186,8 +194,8 @@ class SqliteLedger:
             if row is None:
                 self.conn.execute(
                     "INSERT INTO effects "
-                    "(key, scope, tool, fingerprint, state, provider_dedup, created_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    "(key, scope, tool, fingerprint, state, provider_dedup, reconcilable, "
+                    "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         key,
                         scope,
@@ -195,6 +203,7 @@ class SqliteLedger:
                         fingerprint,
                         EffectState.CLAIMED.value,
                         int(provider_dedup),
+                        int(reconcilable),
                         _now(),
                     ),
                 )
@@ -269,17 +278,21 @@ class SqliteLedger:
     def recover(self) -> list[str]:
         """Startup scan over `EXECUTING` (crash-in-window) rows.
 
-        L0 rows → `AMBIGUOUS` (surfaced). L2 rows (provider-deduplicating) →
-        `CLAIMED`, so the next attempt safely re-dispatches with the same provider
-        key. Returns the keys left `AMBIGUOUS` (the ones needing resolution).
+        L0 rows → `AMBIGUOUS` (surfaced). L2 rows (provider-deduplicating, not
+        reconcilable) → `CLAIMED`, so the next attempt safely re-dispatches.
+        **Reconcilable rows (L1/L2R) are left `EXECUTING`** — only the engine has
+        their reconcile function; it resolves them via :meth:`pending_reconcile`.
+        Returns the keys left `AMBIGUOUS`.
         """
         rows = self.conn.execute(
-            "SELECT key, provider_dedup FROM effects WHERE state = ?",
+            "SELECT key, provider_dedup, reconcilable FROM effects WHERE state = ?",
             (EffectState.EXECUTING.value,),
         ).fetchall()
         ambiguous: list[str] = []
-        for key, dedup in rows:
-            if dedup:
+        for key, dedup, reconcilable in rows:
+            if reconcilable:
+                pass  # engine-driven; see pending_reconcile()
+            elif dedup:
                 self.conn.execute(
                     "UPDATE effects SET state = ? WHERE key = ?", (EffectState.CLAIMED.value, key)
                 )
@@ -291,6 +304,33 @@ class SqliteLedger:
                 ambiguous.append(key)
             seam("during_recovery")  # kill mid-scan; recovery must be idempotent over itself
         return ambiguous
+
+    # --- engine-driven reconciliation (L1 / L2R) --------------------------
+    def pending_reconcile(self) -> list[tuple[str, str]]:
+        """`(key, tool)` for `EXECUTING` reconcilable rows awaiting the engine."""
+        rows = self.conn.execute(
+            "SELECT key, tool FROM effects WHERE state = ? AND reconcilable = 1",
+            (EffectState.EXECUTING.value,),
+        ).fetchall()
+        return [(r[0], r[1]) for r in rows]
+
+    def settle_reconciled(self, key: str, result: object) -> None:
+        """Reconcile found the effect SETTLED — adopt the provider's record."""
+        self.record_success(key, result)
+
+    def reclaim(self, key: str) -> None:
+        """Reconcile found the effect ABSENT (or it's a re-dispatchable leftover) —
+        make it re-claimable."""
+        self.conn.execute(
+            "UPDATE effects SET state = ? WHERE key = ?", (EffectState.CLAIMED.value, key)
+        )
+
+    def ambiguate(self, key: str) -> None:
+        """Reconcile could not determine the outcome (UNKNOWN) — surface it."""
+        self.conn.execute(
+            "UPDATE effects SET state = ?, settled_at = ? WHERE key = ?",
+            (EffectState.AMBIGUOUS.value, _now(), key),
+        )
 
     def keys_in(self, state: EffectState) -> Iterable[str]:
         rows = self.conn.execute(

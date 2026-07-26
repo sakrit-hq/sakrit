@@ -21,6 +21,7 @@ from sakrit.core.declaration import EffectDecl
 from sakrit.core.fingerprint import fingerprint
 from sakrit.core.keys import positional_key
 from sakrit.core.ledger import SqliteLedger
+from sakrit.core.reconcile import Verdict
 from sakrit.core.settle import settle
 
 F = TypeVar("F", bound=Callable[..., Any])
@@ -56,6 +57,7 @@ class Sakrit:
         self._secret = secret
         self._adapter = adapter
         self._recovered = False
+        self._registry: dict[str, EffectDecl] = {}  # tool identity → decl (for reconcile)
 
     def guard(
         self,
@@ -70,13 +72,14 @@ class Sakrit:
         occurrence: int = 1,
     ) -> object:
         """Run ``fn`` exactly once for its logical step, or replay its saved result."""
+        self._registry.setdefault(decl.tool, decl)
         # Q14 — the engine guarantees recovery runs once per process, before the
         # first claim it issues. The Q1 fix removed claim's lazy safety net, so a
         # crash leftover must be resolved by recovery, not left to chance or the
         # integrator. No adapter obligation; a missed on_recovery hook is harmless.
         if not self._recovered:
             self._recovered = True
-            self._ledger.recover()
+            self.recover()
 
         kw = dict(kwargs or {})
         named = _bind(fn, args, kw)
@@ -94,7 +97,25 @@ class Sakrit:
             kwargs=kw,
             provider_key_param=decl.provider_key_param,
             clean_failures=decl.clean_failures,
+            reconcilable=decl.reconcile is not None,
         )
+
+    def recover(self) -> None:
+        """Resolve crash-in-window rows: the ledger handles L0/L2; the engine drives
+        L1/L2R reconciliation using each tool's read-only reconcile function."""
+        self._ledger.recover()
+        for key, tool in self._ledger.pending_reconcile():
+            decl = self._registry.get(tool)
+            if decl is None or decl.reconcile is None:
+                self._ledger.ambiguate(key)  # no reconcile available → surface
+                continue
+            rec = decl.reconcile(key)
+            if rec.verdict is Verdict.SETTLED:
+                self._ledger.settle_reconciled(key, rec.result)
+            elif rec.verdict is Verdict.ABSENT and decl.on_absent == "retry":
+                self._ledger.reclaim(key)  # provably didn't happen → safe to retry
+            else:  # ABSENT+surface (a lagging read may lie), or UNKNOWN
+                self._ledger.ambiguate(key)
 
     def effect(
         self,
@@ -105,6 +126,7 @@ class Sakrit:
         scope: str | None = None,
     ) -> Callable[[F], F]:
         """Decorator form: wrap a tool so every call is guarded."""
+        self._registry.setdefault(decl.tool, decl)  # available to recovery before first call
 
         def deco(fn: F) -> F:
             @functools.wraps(fn)
