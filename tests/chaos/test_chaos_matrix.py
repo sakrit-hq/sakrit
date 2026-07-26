@@ -150,12 +150,14 @@ def test_unguarded_control_duplicates(tmp_path: Path) -> None:
 
 
 @pytest.mark.skip(
-    reason="P2-4: leased multi-worker chaos (kill a lease-holder mid-dispatch, a peer "
-    "takes over) needs the engine-wired leased loop (P3-8). The worker drives the "
-    "single-worker settle path; there is no public surface to chaos-test settle_leased "
-    "yet. The leased protocol is covered deterministically in tests/unit/test_contention.py."
+    reason="P2-4: leased multi-worker *chaos* (kill a lease-holder mid-dispatch under a "
+    "short lease, a peer takes over) still needs a concurrent-kill harness with real "
+    "lease-expiry timing across subprocesses. The engine-wiring blocker (P3-8) is DONE — "
+    "leased exactly-once is now proven through the public surface under real thread "
+    "concurrency in tests/unit/test_engine_leased.py, and takeover-by-ladder "
+    "deterministically in tests/unit/test_contention.py."
 )
 def test_leased_takeover_chaos_placeholder() -> None:  # pragma: no cover
     # Intentionally unimplemented; skipped-with-reason so the gap is visible in the run,
-    # not silently absent. Lands with P3-8 (settle_leased engine integration).
+    # not silently absent. The remaining work is the timing harness, not the wiring.
     raise AssertionError("unreachable")

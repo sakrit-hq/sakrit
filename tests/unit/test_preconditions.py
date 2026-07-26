@@ -103,10 +103,22 @@ def test_same_mode_reopen_is_allowed(tmp_path: Path) -> None:
     SqliteLedger(db, multi_worker=True).close()  # same mode → fine
 
 
-def test_engine_refuses_a_multi_worker_ledger(tmp_path: Path) -> None:
+def test_engine_accepts_a_multi_worker_ledger(tmp_path: Path) -> None:
+    # P3-8: the engine now drives the leased protocol against a multi-worker ledger.
     led = SqliteLedger(tmp_path / "l.sqlite", multi_worker=True)
     try:
+        sk = Sakrit(led, secret=SECRET)
+        assert sk._leased is True
+    finally:
+        led.close()
+
+
+def test_engine_recover_refuses_in_multi_worker_mode(tmp_path: Path) -> None:
+    # P3-4: the lease-blind startup scan would poison live peers → refuse an explicit call.
+    led = SqliteLedger(tmp_path / "l.sqlite", multi_worker=True)
+    try:
+        sk = Sakrit(led, secret=SECRET)
         with pytest.raises(SakritError, match="multi_worker"):
-            Sakrit(led, secret=SECRET)
+            sk.recover()
     finally:
         led.close()

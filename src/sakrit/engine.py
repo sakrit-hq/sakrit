@@ -24,6 +24,7 @@ from sakrit.core.declaration import EffectDecl
 from sakrit.core.errors import SakritError
 from sakrit.core.fingerprint import fingerprint
 from sakrit.core.keys import positional_key
+from sakrit.core.leased import settle_leased
 from sakrit.core.ledger import SqliteLedger
 from sakrit.core.reconcile import Verdict
 from sakrit.core.settle import settle, settle_async
@@ -83,23 +84,20 @@ class Sakrit:
         *,
         secret: bytes,
         adapter: RuntimeAdapter | None = None,
+        lease_seconds: float = 30.0,
+        wait_timeout: float = 30.0,
     ) -> None:
-        # P1-11: the engine drives the *single-worker* path only — guard → settle (the
-        # unfenced claim) and a mandatory startup recover() that reads EXECUTING as
-        # death-evidence. Against a multi-worker ledger that means ambiguating/re-owning
-        # peers' *live* rows. Refuse the composition until the leased loop is wired in
-        # (P3-8); the two protocols must not share the engine.
-        if ledger.multi_worker:
-            raise SakritError(
-                "Sakrit(ledger=...) drives the single-worker settle path, but this ledger "
-                "is multi_worker=True. The engine's startup recovery would poison live "
-                "peers' rows. Use single-worker mode, or drive settle_leased directly."
-            )
         self._ledger = ledger
         self._secret = secret
         self._adapter = adapter
         self._recovered = False
         self._registry: dict[str, EffectDecl] = {}  # tool identity → decl (for reconcile)
+        # P3-8: a multi-worker ledger drives the *leased* protocol (leases + fencing +
+        # takeover-by-ladder); a single-worker ledger drives the unfenced settle path.
+        # The mode is a property of the ledger, machine-checked at its construction (P3-3).
+        self._leased = ledger.multi_worker
+        self._lease_seconds = lease_seconds
+        self._wait_timeout = wait_timeout
 
     def _prepare(
         self,
@@ -119,9 +117,14 @@ class Sakrit:
         # first claim it issues. The Q1 fix removed claim's lazy safety net, so a
         # crash leftover must be resolved by recovery, not left to chance or the
         # integrator. No adapter obligation; a missed on_recovery hook is harmless.
+        # P3-4: the startup scan reads EXECUTING as death-evidence — TRUE only for a
+        # single worker. Against a multi-worker ledger it would ambiguate/re-own live
+        # peers' rows, so it MUST NOT run there; the leased protocol recovers lazily
+        # (claim_leased takes over a row by ladder once its lease expires).
         if not self._recovered:
             self._recovered = True
-            self.recover()
+            if not self._leased:
+                self.recover()
 
         # Merge an active sk.step(...) block: an explicit arg wins; else the context
         # supplies it (P4-1 — distinct occurrences for repeats at one call site).
@@ -154,9 +157,30 @@ class Sakrit:
         scope: str | None = None,
         occurrence: int | None = None,
     ) -> object:
-        """Run a **sync** ``fn`` exactly once for its logical step, or replay its result."""
+        """Run a **sync** ``fn`` exactly once for its logical step, or replay its result.
+
+        Against a multi-worker ledger this drives the *leased* protocol (lease + fencing +
+        takeover-by-ladder); against a single-worker ledger, the unfenced settle path."""
         _reject_async(fn)  # an async tool must use guard_async, not the sync record path
         rkey, rscope, fp, kw = self._prepare(decl, fn, args, kwargs, step, key, scope, occurrence)
+        if self._leased:
+            return settle_leased(
+                self._ledger,
+                key=rkey,
+                scope=rscope,
+                tool=decl.tool,
+                fingerprint=fp,
+                fn=fn,
+                args=args,
+                kwargs=kw,
+                provider_key_param=decl.provider_key_param,
+                clean_failures=decl.clean_failures,
+                reconcilable=decl.reconcile is not None,
+                reconcile=decl.reconcile,
+                on_absent=decl.on_absent,
+                lease_seconds=self._lease_seconds,
+                wait_timeout=self._wait_timeout,
+            )
         return settle(
             self._ledger,
             key=rkey,
@@ -186,6 +210,16 @@ class Sakrit:
     ) -> object:
         """Await an **async** ``fn`` exactly once for its logical step, or replay its
         result. The effect is awaited before Sakrit records — no record-before-effect."""
+        if self._leased:
+            # settle_leased is a blocking loop (BUSY-poll + a heartbeat thread) and calls
+            # fn synchronously — it cannot await an async tool. An async leased loop
+            # (settle_leased_async) is the follow-up; fail closed rather than run the
+            # coroutine unawaited (which would re-open the P1-1 record-before-effect hole).
+            raise SakritError(
+                "guard_async is not yet supported on a multi_worker (leased) ledger — the "
+                "async leased loop (settle_leased_async) is not built. Use a sync tool with "
+                "guard/@sk.effect for multi-worker, or a single-worker ledger for async."
+            )
         rkey, rscope, fp, kw = self._prepare(decl, fn, args, kwargs, step, key, scope, occurrence)
         return await settle_async(
             self._ledger,
@@ -204,7 +238,18 @@ class Sakrit:
 
     def recover(self) -> None:
         """Resolve crash-in-window rows: the ledger handles L0/L2; the engine drives
-        L1/L2R reconciliation using each tool's read-only reconcile function."""
+        L1/L2R reconciliation using each tool's read-only reconcile function.
+
+        Single-worker only. It reads ``EXECUTING`` as death-evidence, which is false when
+        peers are alive — so on a multi-worker ledger it would poison live rows (P3-4).
+        Leased recovery is lazy: ``claim_leased`` takes a row over by ladder once its
+        lease expires."""
+        if self._leased:
+            raise SakritError(
+                "recover() is the single-worker startup scan and would poison live peers' "
+                "rows on a multi_worker ledger. The leased protocol recovers lazily via "
+                "claim_leased takeover; do not call recover() in multi-worker mode."
+            )
         self._ledger.recover()
         for key, tool in self._ledger.pending_reconcile():
             decl = self._registry.get(tool)
