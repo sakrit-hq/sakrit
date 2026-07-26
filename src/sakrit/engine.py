@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import functools
 import inspect
+import logging
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -28,6 +29,8 @@ from sakrit.core.leased import settle_leased, settle_leased_async
 from sakrit.core.ledger import SqliteLedger
 from sakrit.core.reconcile import Verdict
 from sakrit.core.settle import settle, settle_async
+
+logger = logging.getLogger("sakrit")
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -287,7 +290,15 @@ class Sakrit:
             if decl is None or decl.reconcile is None:
                 self._ledger.ambiguate(key)  # no reconcile available → surface
                 continue
-            rec = decl.reconcile(key)
+            try:
+                rec = decl.reconcile(key)
+            except Exception:  # noqa: BLE001 — P1-15: one tool's failure must not strand
+                # A raising reconcile (e.g. the provider is unreachable) must not abandon
+                # the rest of the loop. Surface *this* key (can't determine → AMBIGUOUS)
+                # and carry on resolving the others.
+                logger.exception("sakrit: reconcile for %s raised during recovery; surfacing", key)
+                self._ledger.ambiguate(key)
+                continue
             if rec.verdict is Verdict.SETTLED:
                 self._ledger.settle_reconciled(key, rec.result)
             elif rec.verdict is Verdict.ABSENT and decl.on_absent == "retry":

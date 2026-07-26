@@ -152,3 +152,31 @@ def test_l2r_reconcile_removes_the_ttl_cliff() -> None:
 
     assert led.state_of(key) is EffectState.SUCCEEDED  # reconciled, no TTL cliff
     assert len(provider.deliveries) == 1
+
+
+def test_recover_isolates_a_raising_reconcile() -> None:
+    # P1-15: one tool's reconcile raising (provider unreachable) must not strand the other
+    # pending rows. The bad key surfaces AMBIGUOUS; the good key still resolves.
+    led = SqliteLedger()
+    sk = Sakrit(led, secret=SECRET)
+
+    def boom(key: str) -> Reconciliation:
+        raise RuntimeError("provider unreachable")
+
+    def ok(key: str) -> Reconciliation:
+        return Reconciliation.settled({"adopted": True})
+
+    decl_a = EffectDecl("crm.a", {"x": ArgClass.IDENTITY}, reconcile=boom)
+    decl_b = EffectDecl("crm.b", {"x": ArgClass.IDENTITY}, reconcile=ok)
+    sk._registry["crm.a"] = decl_a
+    sk._registry["crm.b"] = decl_b
+
+    led.claim("kA", "s", "crm.a", "fp", reconcilable=True)
+    led.mark_executing("kA")
+    led.claim("kB", "s", "crm.b", "fp", reconcilable=True)
+    led.mark_executing("kB")
+
+    sk.recover()
+
+    assert led.state_of("kA") is EffectState.AMBIGUOUS  # raise isolated → surfaced
+    assert led.state_of("kB") is EffectState.SUCCEEDED  # the other row still resolved
