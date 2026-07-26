@@ -26,7 +26,7 @@ from sakrit.core.fingerprint import fingerprint
 from sakrit.core.keys import positional_key
 from sakrit.core.ledger import SqliteLedger
 from sakrit.core.reconcile import Verdict
-from sakrit.core.settle import settle
+from sakrit.core.settle import settle, settle_async
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -101,6 +101,47 @@ class Sakrit:
         self._recovered = False
         self._registry: dict[str, EffectDecl] = {}  # tool identity → decl (for reconcile)
 
+    def _prepare(
+        self,
+        decl: EffectDecl,
+        fn: Callable[..., object],
+        args: tuple[object, ...],
+        kwargs: Mapping[str, object] | None,
+        step: str | None,
+        key: str | None,
+        scope: str | None,
+        occurrence: int | None,
+    ) -> tuple[str, str, str, dict[str, object]]:
+        """Shared prelude for guard/guard_async: run recovery once, merge the sk.step
+        context, resolve the coordinate. Returns ``(key, scope, fingerprint, kwargs)``."""
+        self._registry.setdefault(decl.tool, decl)
+        # Q14 — the engine guarantees recovery runs once per process, before the
+        # first claim it issues. The Q1 fix removed claim's lazy safety net, so a
+        # crash leftover must be resolved by recovery, not left to chance or the
+        # integrator. No adapter obligation; a missed on_recovery hook is harmless.
+        if not self._recovered:
+            self._recovered = True
+            self.recover()
+
+        # Merge an active sk.step(...) block: an explicit arg wins; else the context
+        # supplies it (P4-1 — distinct occurrences for repeats at one call site).
+        ctx = _step_ctx.get()
+        eff_step = step if step is not None else (ctx.step if ctx else None)
+        eff_scope = scope if scope is not None else (ctx.scope if ctx else None)
+        eff_occurrence = occurrence if occurrence is not None else (ctx.occurrence if ctx else 1)
+
+        kw = dict(kwargs or {})
+        named = _bind(fn, args, kw)
+        coord = resolve_coordinate(
+            self._adapter, scope=eff_scope, step=eff_step, key=key, occurrence=eff_occurrence
+        )
+        return (
+            positional_key(coord, decl.tool),
+            coord.scope,
+            fingerprint(decl, named, secret=self._secret),
+            kw,
+        )
+
     def guard(
         self,
         decl: EffectDecl,
@@ -113,35 +154,45 @@ class Sakrit:
         scope: str | None = None,
         occurrence: int | None = None,
     ) -> object:
-        """Run ``fn`` exactly once for its logical step, or replay its saved result."""
-        _reject_async(fn)
-        self._registry.setdefault(decl.tool, decl)
-        # Q14 — the engine guarantees recovery runs once per process, before the
-        # first claim it issues. The Q1 fix removed claim's lazy safety net, so a
-        # crash leftover must be resolved by recovery, not left to chance or the
-        # integrator. No adapter obligation; a missed on_recovery hook is harmless.
-        if not self._recovered:
-            self._recovered = True
-            self.recover()
-
-        # Merge an active sk.step(...) block: an explicit arg to guard wins; else the
-        # context supplies it (P4-1 — distinct occurrences for repeats at one call site).
-        ctx = _step_ctx.get()
-        eff_step = step if step is not None else (ctx.step if ctx else None)
-        eff_scope = scope if scope is not None else (ctx.scope if ctx else None)
-        eff_occurrence = occurrence if occurrence is not None else (ctx.occurrence if ctx else 1)
-
-        kw = dict(kwargs or {})
-        named = _bind(fn, args, kw)
-        coord = resolve_coordinate(
-            self._adapter, scope=eff_scope, step=eff_step, key=key, occurrence=eff_occurrence
-        )
+        """Run a **sync** ``fn`` exactly once for its logical step, or replay its result."""
+        _reject_async(fn)  # an async tool must use guard_async, not the sync record path
+        rkey, rscope, fp, kw = self._prepare(decl, fn, args, kwargs, step, key, scope, occurrence)
         return settle(
             self._ledger,
-            key=positional_key(coord, decl.tool),
-            scope=coord.scope,
+            key=rkey,
+            scope=rscope,
             tool=decl.tool,
-            fingerprint=fingerprint(decl, named, secret=self._secret),
+            fingerprint=fp,
+            fn=fn,
+            args=args,
+            kwargs=kw,
+            provider_key_param=decl.provider_key_param,
+            provider_ttl_s=decl.provider_ttl_s,
+            clean_failures=decl.clean_failures,
+            reconcilable=decl.reconcile is not None,
+        )
+
+    async def guard_async(
+        self,
+        decl: EffectDecl,
+        fn: Callable[..., object],
+        *,
+        args: tuple[object, ...] = (),
+        kwargs: Mapping[str, object] | None = None,
+        step: str | None = None,
+        key: str | None = None,
+        scope: str | None = None,
+        occurrence: int | None = None,
+    ) -> object:
+        """Await an **async** ``fn`` exactly once for its logical step, or replay its
+        result. The effect is awaited before Sakrit records — no record-before-effect."""
+        rkey, rscope, fp, kw = self._prepare(decl, fn, args, kwargs, step, key, scope, occurrence)
+        return await settle_async(
+            self._ledger,
+            key=rkey,
+            scope=rscope,
+            tool=decl.tool,
+            fingerprint=fp,
             fn=fn,
             args=args,
             kwargs=kw,
@@ -177,7 +228,9 @@ class Sakrit:
         scope: str | None = None,
         occurrence: int | None = None,
     ) -> Callable[[F], F]:
-        """Decorator form: wrap a tool so every call is guarded.
+        """Decorator form: wrap a tool so every call is guarded. Works on both sync and
+        ``async def`` tools — an async tool yields an async wrapper (await it) driven by
+        :meth:`guard_async`; a sync tool yields a sync wrapper driven by :meth:`guard`.
 
         A fixed ``occurrence`` here freezes one coordinate per call site. For repeats at
         one site (a loop, deliberate resend, or parallel same-tool calls), leave it and
@@ -186,7 +239,22 @@ class Sakrit:
         self._registry.setdefault(decl.tool, decl)  # available to recovery before first call
 
         def deco(fn: F) -> F:
-            _reject_async(fn)  # fail at decoration (import) time, not at 2am
+            if inspect.iscoroutinefunction(fn) or inspect.isasyncgenfunction(fn):
+
+                @functools.wraps(fn)
+                async def awrapper(*args: Any, **kwargs: Any) -> Any:
+                    return await self.guard_async(
+                        decl,
+                        fn,
+                        args=args,
+                        kwargs=kwargs,
+                        step=step,
+                        key=key,
+                        scope=scope,
+                        occurrence=occurrence,
+                    )
+
+                return awrapper  # type: ignore[return-value]
 
             @functools.wraps(fn)
             def wrapper(*args: Any, **kwargs: Any) -> Any:

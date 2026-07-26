@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
-"""P1-1a: guarding an async tool synchronously would record success before the
-effect runs — so we refuse it, loudly, at decoration time (and belt-and-braces in
-settle for wrappers that dodge the signature check)."""
+"""P1-1: guarding an async tool *synchronously* would record success before the effect
+runs. The sync path refuses it loudly — sk.guard rejects async, and settle has a
+belt-and-braces awaitable check. (Real async support lives via guard_async; see
+test_async_support.py.)"""
 
+import inspect
 from collections.abc import Generator
 
 import pytest
@@ -15,15 +17,18 @@ DECL = EffectDecl("t.send", {"to": ArgClass.IDENTITY})
 SECRET = b"deployment-secret"
 
 
-def test_effect_decorator_rejects_async_at_decoration() -> None:
+def test_effect_decorator_accepts_async_and_yields_async_wrapper() -> None:
+    # Move 2 (P1-1b): the decorator now *supports* async — it routes to guard_async and
+    # returns an async wrapper, rather than rejecting at decoration.
     sk = Sakrit(SqliteLedger(), secret=SECRET)
-    with pytest.raises(SakritError, match="async"):
 
-        @sk.effect(DECL, key="k")
-        async def send(to: str) -> None: ...
+    @sk.effect(DECL, key="k")
+    async def send(to: str) -> None: ...
+
+    assert inspect.iscoroutinefunction(send)
 
 
-def test_guard_rejects_async() -> None:
+def test_sync_guard_still_rejects_async() -> None:
     sk = Sakrit(SqliteLedger(), secret=SECRET)
 
     async def send(to: str) -> str:

@@ -28,7 +28,7 @@ from sakrit.core.keys import positional_key
 from sakrit.core.leased import settle_leased
 from sakrit.core.ledger import EffectState, Replayed, SqliteLedger
 from sakrit.core.reconcile import Reconciliation, Verdict
-from sakrit.core.settle import settle
+from sakrit.core.settle import settle, settle_async
 
 __all__ = [
     "AmbiguousOutcome",
@@ -55,5 +55,6 @@ __all__ = [
     "positional_key",
     "resolve_coordinate",
     "settle",
+    "settle_async",
     "settle_leased",
 ]
