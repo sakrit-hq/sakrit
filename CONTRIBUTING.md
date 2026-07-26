@@ -14,7 +14,7 @@ This is deliberate and it is not negotiable. If we want Sakrit to be both
 adoptable *and* acquirable, the IP has to be unambiguous from the start.
 Retrofitting a CLA onto dozens of contributors later is a common way
 acquisitions die in diligence — invisible right up until it's fatal
-(see [Act I, step 4 of the roadmap](docs/roadmap.md)).
+(see Act I, step 4 of the roadmap).
 
 - The CLA is checked automatically on every pull request.
 - You sign once; it covers all your future contributions.

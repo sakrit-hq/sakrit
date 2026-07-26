@@ -36,9 +36,9 @@ def send_email(to: str, subject: str, body: str) -> None:
 ## Status
 
 Pre-alpha. This repository currently holds project plumbing and structure only;
-the narrow core lands in **Act II** of the roadmap. See
-[`docs/roadmap.md`](docs/roadmap.md) for the full execution plan and
-[`CONTRIBUTING.md`](CONTRIBUTING.md) to get involved (a signed CLA comes first).
+the narrow core lands in **Act II** of the roadmap (kept privately, outside this
+repository). See [`CONTRIBUTING.md`](CONTRIBUTING.md) to get involved (a signed
+CLA comes first).
 
 ## Development
 
