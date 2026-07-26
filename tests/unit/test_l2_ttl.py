@@ -18,7 +18,7 @@ def _age_row(led: SqliteLedger, key: str, delta: timedelta) -> None:
 
 
 def test_l2_leftover_within_ttl_is_reclaimable() -> None:
-    led = SqliteLedger()
+    led = SqliteLedger(":memory:")
     led.claim("k", "s", "t", "fp", provider_dedup=True, provider_ttl_s=3600)
     led.mark_executing("k")
     assert led.recover() == []
@@ -27,7 +27,7 @@ def test_l2_leftover_within_ttl_is_reclaimable() -> None:
 
 def test_l2_leftover_beyond_ttl_surfaces_ambiguous() -> None:
     told: list[str] = []
-    led = SqliteLedger(on_ambiguous=told.append)
+    led = SqliteLedger(":memory:", on_ambiguous=told.append)
     led.claim("k", "s", "t", "fp", provider_dedup=True, provider_ttl_s=3600)  # 1h
     led.mark_executing("k")
     _age_row(led, "k", timedelta(hours=2))  # past the horizon
@@ -39,7 +39,7 @@ def test_l2_leftover_beyond_ttl_surfaces_ambiguous() -> None:
 def test_l2_leftover_unbounded_ttl_stays_reclaimable() -> None:
     # provider_ttl_s=None → unbounded (the prior, over-optimistic behavior is preserved
     # for anyone who has not declared a TTL).
-    led = SqliteLedger()
+    led = SqliteLedger(":memory:")
     led.claim("k", "s", "t", "fp", provider_dedup=True)  # no TTL
     led.mark_executing("k")
     _age_row(led, "k", timedelta(days=30))
@@ -49,7 +49,7 @@ def test_l2_leftover_unbounded_ttl_stays_reclaimable() -> None:
 
 def test_decl_ttl_is_captured_at_claim() -> None:
     # End-to-end: the TTL flows decl → guard → settle → claim and lands on the row.
-    led = SqliteLedger()
+    led = SqliteLedger(":memory:")
     decl = EffectDecl(
         "pay.charge",
         {"amt": ArgClass.IDENTITY},

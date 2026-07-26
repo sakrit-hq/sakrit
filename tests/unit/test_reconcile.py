@@ -64,7 +64,7 @@ def test_level_derivation() -> None:
 
 
 def test_l1_reconcile_settled_adopts_provider_record() -> None:
-    led = SqliteLedger()
+    led = SqliteLedger(":memory:")
     provider = QueryableProvider()
     decl = _l1_decl(provider)
     key = _key("crash")
@@ -82,7 +82,7 @@ def test_l1_reconcile_settled_adopts_provider_record() -> None:
 
 
 def test_l1_reconcile_absent_surfaces_by_default() -> None:
-    led = SqliteLedger()
+    led = SqliteLedger(":memory:")
     provider = QueryableProvider()
     decl = _l1_decl(provider, on_absent="surface")  # irreversible default
     key = _key("crash")
@@ -98,7 +98,7 @@ def test_l1_reconcile_absent_surfaces_by_default() -> None:
 
 
 def test_l1_reconcile_absent_retry_when_declared() -> None:
-    led = SqliteLedger()
+    led = SqliteLedger(":memory:")
     provider = QueryableProvider()
     decl = _l1_decl(provider, on_absent="retry", provider_read="strong")
     key = _key("crash")
@@ -115,7 +115,7 @@ def test_l1_reconcile_absent_retry_when_declared() -> None:
 
 
 def test_l1_reconcile_unknown_stays_ambiguous() -> None:
-    led = SqliteLedger()
+    led = SqliteLedger(":memory:")
     provider = QueryableProvider()
     provider.answer_unknown = True
     decl = _l1_decl(provider)
@@ -132,7 +132,7 @@ def test_l1_reconcile_unknown_stays_ambiguous() -> None:
 
 def test_l2r_reconcile_removes_the_ttl_cliff() -> None:
     # L2R: past the provider's key TTL, reconcile (not blind re-dispatch) resolves it.
-    led = SqliteLedger()
+    led = SqliteLedger(":memory:")
     provider = QueryableProvider()
     decl = EffectDecl(
         "pay.charge",
@@ -158,7 +158,7 @@ def test_recover_isolates_a_raising_reconcile() -> None:
     # P1-15: one tool's reconcile raising (provider unreachable) must not strand the other
     # pending rows. V-12: a *raised* reconcile is transient — leave it EXECUTING (retried at
     # the next recovery), NOT ambiguated (which is permanent). The good key still resolves.
-    led = SqliteLedger()
+    led = SqliteLedger(":memory:")
     sk = Sakrit(led, secret=SECRET)
 
     def boom(key: str) -> Reconciliation:
@@ -186,7 +186,7 @@ def test_recover_isolates_a_raising_reconcile() -> None:
 def test_v12_transient_reconcile_error_self_heals_on_next_recovery() -> None:
     # V-12: a raised reconcile leaves the row EXECUTING; the *next* recovery (fresh engine,
     # provider back up) reconciles it — a startup blip does not permanently strand the row.
-    led = SqliteLedger()
+    led = SqliteLedger(":memory:")
     provider = QueryableProvider()
     key = _key("blip")
     led.claim(key, "global", "crm.ticket", "fp", reconcilable=True)
@@ -226,7 +226,7 @@ def test_p1_15_sliver_recover_retried_if_it_raises() -> None:
                 raise RuntimeError("transient DB error")
             return super().recover()
 
-    led = FlakyRecover()
+    led = FlakyRecover(":memory:")
     sk = Sakrit(led, secret=SECRET)
 
     @sk.effect(EffectDecl("email.send", {"to": ArgClass.IDENTITY}), key="k")

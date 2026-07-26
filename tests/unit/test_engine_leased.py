@@ -32,7 +32,7 @@ def test_leased_engine_takes_the_fenced_path(tmp_path: Path) -> None:
 
 
 def test_single_worker_engine_takes_the_unfenced_path() -> None:
-    led = SqliteLedger()  # single-worker :memory:
+    led = SqliteLedger(":memory:")  # single-worker :memory:
     sk = Sakrit(led, secret=SECRET)
 
     @sk.effect(DECL, key="k")

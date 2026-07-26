@@ -44,7 +44,7 @@ def _key(scope: str = "run-1", site: str = "charge") -> str:
 
 
 def test_l2_tool_reads_current_key() -> None:
-    led = SqliteLedger()
+    led = SqliteLedger(":memory:")
     seen: dict[str, object] = {}
 
     # Clean signature — no phantom idempotency_key parameter; the tool reads the key.
@@ -61,7 +61,7 @@ def test_l2_tool_reads_current_key() -> None:
 
 
 def test_l2_crash_in_window_redispatches_and_dedups() -> None:
-    led = SqliteLedger()
+    led = SqliteLedger(":memory:")
     provider = KeyedProvider()
     key = _key()
     fp = fingerprint(CHARGE, {"customer": "c1", "amount_cents": 4000}, secret=SECRET)
@@ -97,7 +97,7 @@ def test_l2_crash_in_window_redispatches_and_dedups() -> None:
 
 def test_l0_crash_in_window_still_ambiguous() -> None:
     # Contrast: without a provider key (L0), the same crash surfaces AMBIGUOUS.
-    led = SqliteLedger()
+    led = SqliteLedger(":memory:")
     key = _key()
     led.claim(key, "run-1", "payment.charge", "fp", provider_dedup=False)
     led.mark_executing(key)

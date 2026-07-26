@@ -140,11 +140,18 @@ _MODE_MULTI = 2
 
 
 class SqliteLedger:
-    """A durable, single-writer ledger backed by SQLite."""
+    """A durable, single-writer ledger backed by SQLite.
+
+    ``path`` is **required** (P1-13): there is no default. For a durability library the unsafe
+    thing is the zero-argument path — ``SqliteLedger()`` used to default to an ephemeral
+    in-memory DB that passes every in-process test and then loses everything on the first real
+    crash, silently reinstating the dual-write hole. Choose explicitly: a file path for
+    durability, or the literal ``":memory:"`` for a deliberately ephemeral dev/test ledger.
+    """
 
     def __init__(
         self,
-        path: str | Path = ":memory:",
+        path: str | Path,
         *,
         i_accept_data_loss: bool = False,
         multi_worker: bool = False,

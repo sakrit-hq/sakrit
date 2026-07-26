@@ -15,7 +15,7 @@ SECRET = b"deployment-secret"
 
 
 def test_async_effect_runs_exactly_once_and_replays() -> None:
-    sk = Sakrit(SqliteLedger(), secret=SECRET)
+    sk = Sakrit(SqliteLedger(":memory:"), secret=SECRET)
     calls: list[str] = []
 
     @sk.effect(DECL, key="welcome")
@@ -36,7 +36,7 @@ def test_async_effect_runs_exactly_once_and_replays() -> None:
 
 
 def test_async_divergent_identity_arg_refuses() -> None:
-    sk = Sakrit(SqliteLedger(), secret=SECRET)
+    sk = Sakrit(SqliteLedger(":memory:"), secret=SECRET)
 
     @sk.effect(DECL, key="welcome")
     async def send(to: str) -> str:
@@ -51,7 +51,7 @@ def test_async_divergent_identity_arg_refuses() -> None:
 
 
 def test_async_tool_can_read_current_key() -> None:
-    sk = Sakrit(SqliteLedger(), secret=SECRET)
+    sk = Sakrit(SqliteLedger(":memory:"), secret=SECRET)
     seen: dict[str, object] = {}
 
     @sk.effect(DECL, key="order-9")
@@ -67,7 +67,7 @@ def test_async_tool_can_read_current_key() -> None:
 
 def test_settle_async_records_only_after_the_await() -> None:
     # The invariant P1-1 protects: SUCCEEDED is written *after* the effect, never before.
-    led = SqliteLedger()
+    led = SqliteLedger(":memory:")
     key = positional_key(Coordinate("global", b"k"), "t.send")
     order: list[str] = []
 
@@ -87,7 +87,7 @@ def test_settle_async_records_only_after_the_await() -> None:
 
 
 def test_async_clean_failure_is_reclaimable() -> None:
-    led = SqliteLedger()
+    led = SqliteLedger(":memory:")
     key = positional_key(Coordinate("global", b"k"), "t.send")
 
     class Rejected(Exception):

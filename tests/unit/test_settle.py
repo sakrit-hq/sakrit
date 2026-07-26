@@ -31,7 +31,7 @@ def _fp(**identity_and_content: object) -> str:
 
 
 def test_executes_once_then_replays_reworded() -> None:
-    led = SqliteLedger()
+    led = SqliteLedger(":memory:")
     calls: list[dict[str, object]] = []
 
     def effect(**kw: object) -> dict[str, int]:
@@ -65,7 +65,7 @@ def test_executes_once_then_replays_reworded() -> None:
 
 
 def test_divergent_identity_raises_and_does_not_execute() -> None:
-    led = SqliteLedger()
+    led = SqliteLedger(":memory:")
     key = _key()
     settle(
         led,
@@ -97,7 +97,7 @@ def test_divergent_identity_raises_and_does_not_execute() -> None:
 
 
 def test_claim_on_executing_refuses_then_recovery_surfaces_ambiguous() -> None:
-    led = SqliteLedger()
+    led = SqliteLedger(":memory:")
     key = _key()
     fp = _fp(to="a@x.com")
     # Simulate a crash between EXECUTING and record: claim + mark, never record.
@@ -117,7 +117,7 @@ def test_claim_on_executing_refuses_then_recovery_surfaces_ambiguous() -> None:
 
 
 def test_recover_moves_executing_to_ambiguous() -> None:
-    led = SqliteLedger()
+    led = SqliteLedger(":memory:")
     key = _key()
     led.claim(key, "run-1", "email.send", "fp")
     led.mark_executing(key)
@@ -128,7 +128,7 @@ def test_recover_moves_executing_to_ambiguous() -> None:
 def test_undeclared_exception_is_ambiguous_not_failed() -> None:
     # An unclassified exception (a timeout may have executed) must NOT become a
     # retriable FAILED. The row stays EXECUTING; a retry surfaces as ambiguous.
-    led = SqliteLedger()
+    led = SqliteLedger(":memory:")
     key = _key()
     fp = _fp(to="a@x.com")
 
@@ -150,7 +150,7 @@ def test_undeclared_exception_is_ambiguous_not_failed() -> None:
 
 def test_declared_clean_failure_is_reattemptable() -> None:
     # A declared clean failure asserts non-execution → FAILED, safely re-claimable.
-    led = SqliteLedger()
+    led = SqliteLedger(":memory:")
     key = _key()
     fp = _fp(to="a@x.com")
 
@@ -185,7 +185,7 @@ def test_declared_clean_failure_is_reattemptable() -> None:
 def test_unserializable_result_records_succeeded_and_replays_as_marker() -> None:
     # Execution truth outranks result fidelity: an unstorable result must still
     # record SUCCEEDED (never FAILED), and replay must not re-execute.
-    led = SqliteLedger()
+    led = SqliteLedger(":memory:")
     key = _key()
     fp = _fp(to="a@x.com")
 

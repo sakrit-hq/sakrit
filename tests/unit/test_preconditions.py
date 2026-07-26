@@ -25,7 +25,7 @@ def test_i_accept_data_loss_is_explicit_and_reported(tmp_path: Path) -> None:
 
 
 def test_memory_ledger_is_ephemeral() -> None:
-    with SqliteLedger() as led:
+    with SqliteLedger(":memory:") as led:
         assert "ephemeral" in led.fault_model()
 
 
@@ -44,14 +44,14 @@ def test_second_worker_on_same_file_is_refused(tmp_path: Path) -> None:
 
 
 def test_memory_ledgers_do_not_lock() -> None:
-    a, b = SqliteLedger(), SqliteLedger()  # no file → no lock → both fine
+    a, b = SqliteLedger(":memory:"), SqliteLedger(":memory:")  # no file → no lock → both fine
     a.close()
     b.close()
 
 
 # --- Q14: engine-guaranteed recovery before the first claim ---------------
 def test_guard_runs_recovery_once_before_first_effect() -> None:
-    led = SqliteLedger()
+    led = SqliteLedger(":memory:")
     # A crash leftover from a prior process: an EXECUTING row (L0).
     stale = positional_key(Coordinate("run-0", b"stale-step"), "email.send")
     led.claim(stale, "run-0", "email.send", "fp")
@@ -78,7 +78,7 @@ def test_guard_runs_recovery_once_before_first_effect() -> None:
 def test_multi_worker_memory_is_refused() -> None:
     # An in-memory DB is private per connection → N workers, N isolated ledgers.
     with pytest.raises(SakritError, match="shared database"):
-        SqliteLedger(multi_worker=True)
+        SqliteLedger(":memory:", multi_worker=True)
 
 
 def test_mode_stamp_refuses_multi_open_of_single_worker_db(tmp_path: Path) -> None:
@@ -207,3 +207,14 @@ def test_same_owner_label_two_workers_do_not_both_proceed(tmp_path: Path) -> Non
     finally:
         a.close()
         b.close()
+
+
+# --- P1-13: no zero-argument (ephemeral-by-default) footgun -----------------
+def test_zero_arg_ledger_is_refused() -> None:
+    with pytest.raises(TypeError):
+        SqliteLedger()  # type: ignore[call-arg]  # path is required — choose explicitly
+
+
+def test_explicit_memory_is_allowed_and_reports_ephemeral() -> None:
+    with SqliteLedger(":memory:") as led:
+        assert "ephemeral" in led.fault_model()  # deliberately ephemeral, explicitly chosen

@@ -20,7 +20,7 @@ SECRET = b"deployment-secret"
 def test_effect_decorator_accepts_async_and_yields_async_wrapper() -> None:
     # Move 2 (P1-1b): the decorator now *supports* async — it routes to guard_async and
     # returns an async wrapper, rather than rejecting at decoration.
-    sk = Sakrit(SqliteLedger(), secret=SECRET)
+    sk = Sakrit(SqliteLedger(":memory:"), secret=SECRET)
 
     @sk.effect(DECL, key="k")
     async def send(to: str) -> None: ...
@@ -29,7 +29,7 @@ def test_effect_decorator_accepts_async_and_yields_async_wrapper() -> None:
 
 
 def test_sync_guard_still_rejects_async() -> None:
-    sk = Sakrit(SqliteLedger(), secret=SECRET)
+    sk = Sakrit(SqliteLedger(":memory:"), secret=SECRET)
 
     async def send(to: str) -> str:
         return "x"
@@ -46,7 +46,7 @@ class _FakeAwaitable:
 
 
 def test_settle_refuses_awaitable_result_before_recording() -> None:
-    led = SqliteLedger()
+    led = SqliteLedger(":memory:")
 
     def sync_wrapper() -> _FakeAwaitable:  # not a coroutine *function* → passes _reject_async
         return _FakeAwaitable()

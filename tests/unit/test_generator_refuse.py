@@ -25,7 +25,7 @@ SECRET = b"deployment-secret"
 
 
 def test_decorator_refuses_sync_generator_at_decoration() -> None:
-    sk = Sakrit(SqliteLedger(), secret=SECRET)
+    sk = Sakrit(SqliteLedger(":memory:"), secret=SECRET)
     with pytest.raises(SakritError, match="generator"):
 
         @sk.effect(DECL, key="k")
@@ -34,7 +34,7 @@ def test_decorator_refuses_sync_generator_at_decoration() -> None:
 
 
 def test_decorator_refuses_async_generator_at_decoration() -> None:
-    sk = Sakrit(SqliteLedger(), secret=SECRET)
+    sk = Sakrit(SqliteLedger(":memory:"), secret=SECRET)
     with pytest.raises(SakritError, match="generator"):
 
         @sk.effect(DECL, key="k")
@@ -43,7 +43,7 @@ def test_decorator_refuses_async_generator_at_decoration() -> None:
 
 
 def test_sync_guard_refuses_generator() -> None:
-    sk = Sakrit(SqliteLedger(), secret=SECRET)
+    sk = Sakrit(SqliteLedger(":memory:"), secret=SECRET)
 
     def send(to: str):  # type: ignore[no-untyped-def]
         yield to
@@ -53,7 +53,7 @@ def test_sync_guard_refuses_generator() -> None:
 
 
 def test_guard_async_refuses_async_generator() -> None:
-    sk = Sakrit(SqliteLedger(), secret=SECRET)
+    sk = Sakrit(SqliteLedger(":memory:"), secret=SECRET)
 
     async def send(to: str):  # type: ignore[no-untyped-def]
         yield to
@@ -65,7 +65,7 @@ def test_guard_async_refuses_async_generator() -> None:
 def test_settle_belt_refuses_a_returned_generator_before_recording() -> None:
     # A plain function (NOT a generator function) that hands back a generator object —
     # dodges the decoration check; the settle belt must still refuse it.
-    led = SqliteLedger()
+    led = SqliteLedger(":memory:")
 
     def wrapper() -> Iterator[int]:
         def g() -> Iterator[int]:
@@ -80,7 +80,7 @@ def test_settle_belt_refuses_a_returned_generator_before_recording() -> None:
 
 
 def test_settle_async_belt_refuses_a_returned_async_generator() -> None:
-    led = SqliteLedger()
+    led = SqliteLedger(":memory:")
 
     async def wrapper() -> AsyncIterator[int]:
         async def ag() -> AsyncIterator[int]:

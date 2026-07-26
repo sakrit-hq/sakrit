@@ -8,7 +8,7 @@ from sakrit.core import LeasedLedger, Ledger, SqliteLedger
 
 
 def test_sqlite_ledger_satisfies_the_ledger_protocols() -> None:
-    led = SqliteLedger()
+    led = SqliteLedger(":memory:")
     try:
         assert isinstance(led, Ledger)  # single-worker core surface
         assert isinstance(led, LeasedLedger)  # + the leased extension (LeasedLedger ⊇ Ledger)

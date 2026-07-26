@@ -22,7 +22,7 @@ def _claim(led: SqliteLedger, key: str = "k") -> None:
 
 def test_claim_on_claimed_row_refuses() -> None:
     """A second concurrent claim of a live CLAIMED row must not re-own it."""
-    led = SqliteLedger()
+    led = SqliteLedger(":memory:")
     _claim(led)  # A: INTENDED-absent → CLAIMED, PROCEED
     assert led.state_of("k") is EffectState.CLAIMED
     with pytest.raises(EffectInFlightError, match="CLAIMED"):
@@ -31,7 +31,7 @@ def test_claim_on_claimed_row_refuses() -> None:
 
 def test_recovery_blesses_claimed_leftover_as_intended() -> None:
     """A crash between claim and dispatch leaves CLAIMED; recovery makes it INTENDED."""
-    led = SqliteLedger()
+    led = SqliteLedger(":memory:")
     _claim(led)  # crash right after claim, before mark_executing
     assert led.recover() == []  # a bare CLAIMED leftover is not AMBIGUOUS
     assert led.state_of("k") is EffectState.INTENDED
@@ -39,7 +39,7 @@ def test_recovery_blesses_claimed_leftover_as_intended() -> None:
 
 def test_intended_is_re_claimable() -> None:
     """Recovery-blessed INTENDED re-owns to PROCEED on the next attempt."""
-    led = SqliteLedger()
+    led = SqliteLedger(":memory:")
     _claim(led)
     led.recover()  # CLAIMED → INTENDED
     claim = led.claim("k", "run-1", "t.send", "fp2")

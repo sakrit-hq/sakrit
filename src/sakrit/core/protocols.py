@@ -22,9 +22,9 @@ obligation lives on the method that carries it (see ``docs/dev-notes/ledger-prot
   conditional write (write-once on terminal states; the token gate is the fence).
 
 ``SqliteLedger`` satisfies both structurally — mypy checks conformance wherever a concrete
-``SqliteLedger`` reaches a Protocol-typed parameter (``Sakrit(SqliteLedger())``, the settle
-calls). A backend that satisfies the *signatures* but not these *semantics* is a silent
-exactly-once break — the semantics are the real contract.
+``SqliteLedger`` reaches a Protocol-typed parameter (a ``Sakrit(SqliteLedger(...))`` construction,
+the settle calls). A backend that satisfies the *signatures* but not these *semantics* is a
+silent exactly-once break — the semantics are the real contract.
 """
 
 from __future__ import annotations

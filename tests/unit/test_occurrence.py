@@ -13,7 +13,7 @@ DECL = EffectDecl("notify.remind", {"to": ArgClass.IDENTITY})
 
 
 def _sk_and_sink() -> tuple[Sakrit, list[str]]:
-    sk = Sakrit(SqliteLedger(), secret=SECRET)
+    sk = Sakrit(SqliteLedger(":memory:"), secret=SECRET)
     return sk, []
 
 

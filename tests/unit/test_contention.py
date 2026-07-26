@@ -44,7 +44,7 @@ def _stale_l1_row(led: SqliteLedger) -> None:
 
 
 def _led() -> SqliteLedger:
-    return SqliteLedger()  # :memory: — no flock, fine for the protocol test
+    return SqliteLedger(":memory:")  # :memory: — no flock, fine for the protocol test
 
 
 def test_fresh_claim_acquires_lease_and_token() -> None:
@@ -168,7 +168,7 @@ def test_settle_leased_aborts_dispatch_when_lease_lost_before_fence() -> None:
                 )
             return super().fence(key, token, state, result=result)
 
-    led = PeerStealsBeforeFence()
+    led = PeerStealsBeforeFence(":memory:")
     out = settle_leased(led, key="k", scope="s", tool="t", fingerprint="fp", fn=fn)
     assert out == "peer-result"  # we replayed the peer's result
     assert calls == []  # our fn never dispatched — exactly-once held
@@ -185,7 +185,7 @@ def test_settle_leased_times_out_if_lease_lost_and_never_resolves() -> None:
                 )
             return super().fence(key, token, state, result=result)
 
-    led = AlwaysLosesFence()
+    led = AlwaysLosesFence(":memory:")
     try:
         settle_leased(
             led,
@@ -354,7 +354,7 @@ def test_settle_leased_no_heartbeat_thread_in_single_worker() -> None:
             beats.append(1)
             return super().heartbeat(key, owner, lease_seconds, now=now)
 
-    led = CountingLedger()  # single-worker, :memory:
+    led = CountingLedger(":memory:")  # single-worker, :memory:
     out = settle_leased(led, key="k", scope="s", tool="t", fingerprint="fp", fn=lambda: "x")
     assert out == "x"
     assert beats == []
@@ -424,7 +424,7 @@ def test_leased_l2_takeover_beyond_ttl_surfaces_ambiguous() -> None:
     # P1-5 (leased): past the TTL the provider has forgotten the key → a re-dispatch would
     # NOT dedup → surface, don't silently duplicate. Token is bumped (zombie fenced).
     told: list[str] = []
-    led = SqliteLedger(on_ambiguous=told.append)
+    led = SqliteLedger(":memory:", on_ambiguous=told.append)
     led.claim_leased(
         "k",
         "s",
@@ -671,7 +671,7 @@ def test_v5b_l2_ttl_horizon_survives_a_crashed_takeover() -> None:
     # V-5b: the L2-TTL horizon keys on state==EXECUTING; a crashed takeover must not erase
     # it to CLAIMED (which would let a later past-TTL taker PROCEED — an un-dedupable dup).
     told: list[str] = []
-    led = SqliteLedger(on_ambiguous=told.append)
+    led = SqliteLedger(":memory:", on_ambiguous=told.append)
     led.claim_leased(
         "k",
         "s",
@@ -888,7 +888,7 @@ def test_unexpected_claim_kind_is_refused_not_executed() -> None:
         def claim(self, *a, **k):  # type: ignore[no-untyped-def]
             return Claim(ClaimKind.BUSY)  # a kind the sync path must not proceed on
 
-    led = BusyLedger()
+    led = BusyLedger(":memory:")
     with pytest.raises(SakritError, match="unexpected claim kind"):
         settle(led, key="k", scope="s", tool="t", fingerprint="fp", fn=lambda: 1)
 

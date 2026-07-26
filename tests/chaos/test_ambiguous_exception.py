@@ -65,7 +65,7 @@ def _key() -> str:
 @pytest.mark.chaos
 def test_ambiguous_timeout_does_not_duplicate() -> None:
     world = FakeWorld(keyed=False)  # L0: nobody downstream deduplicates
-    led = SqliteLedger()
+    led = SqliteLedger(":memory:")
     key = _key()
     fp = fingerprint(DECL, {"to": "c@x.com"}, secret=SECRET)
 
