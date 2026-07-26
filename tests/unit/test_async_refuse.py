@@ -52,7 +52,7 @@ def test_settle_refuses_awaitable_result_before_recording() -> None:
         return _FakeAwaitable()
 
     key = positional_key(Coordinate("global", b"k"), "t.send")
-    with pytest.raises(SakritError, match="awaitable"):
+    with pytest.raises(SakritError, match="did not run"):
         settle(led, key=key, scope="global", tool="t.send", fingerprint="fp", fn=sync_wrapper)
     # The critical invariant: it did NOT record SUCCEEDED before the effect ran.
     assert led.state_of(key) is not EffectState.SUCCEEDED

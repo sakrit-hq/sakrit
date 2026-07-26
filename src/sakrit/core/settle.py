@@ -107,14 +107,15 @@ def settle(
     token = _current_key.set(key)  # the tool may read this via sakrit.current_key()
     try:
         result = fn(*args, **dict(kwargs or {}))
-        # Belt-and-braces (P1-1): a wrapper that dodged the decoration-time check may
-        # still hand back a coroutine. It was never awaited → no effect ran → refuse
-        # BEFORE recording, so we never record SUCCEEDED before the effect. Use
-        # settle_async for a genuine async tool.
-        if inspect.isawaitable(result):
+        # Belt-and-braces (P1-1, V-1): a wrapper that dodged the decoration-time check may
+        # still hand back a lazy value whose body never ran — a coroutine (awaitable) or a
+        # generator / async-generator (iterables). Recording any of them would record
+        # SUCCEEDED before the effect. Refuse BEFORE recording.
+        if inspect.isawaitable(result) or inspect.isgenerator(result) or inspect.isasyncgen(result):
             raise SakritError(
-                f"{tool}: the guarded callable returned an awaitable; it was not run. "
-                "Sakrit cannot guard async tools synchronously — use guard_async/settle_async."
+                f"{tool}: the guarded callable returned a {type(result).__name__}; its body "
+                "did not run (a coroutine/generator is lazy). Sakrit records only after the "
+                "effect executes — collect it to a value, or use guard_async for an async tool."
             )
         seam("after_dispatch")
     except BaseException as exc:
@@ -178,6 +179,14 @@ async def settle_async(
         # Await the effect. A sync tool that returns a plain value is tolerated (nothing
         # to await); a coroutine / awaitable is awaited before we record — never after.
         result = await raw if inspect.isawaitable(raw) else raw
+        # V-1 belt: an async-generator is NOT awaitable, so it slips past the await above
+        # with its body unrun. Refuse it (and a sync generator) before recording.
+        if inspect.isgenerator(result) or inspect.isasyncgen(result):
+            raise SakritError(
+                f"{tool}: the guarded callable returned a {type(result).__name__}; its body "
+                "did not run. An async generator is not awaitable — collect its items inside "
+                "a coroutine and return the result."
+            )
         seam("after_dispatch")
     except BaseException as exc:
         if isinstance(exc, clean_failures):

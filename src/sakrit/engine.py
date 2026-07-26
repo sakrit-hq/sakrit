@@ -46,17 +46,35 @@ class _StepCtx:
 _step_ctx: ContextVar[_StepCtx | None] = ContextVar("sakrit_step_ctx", default=None)
 
 
-def _reject_async(fn: Callable[..., object]) -> None:
-    """Refuse to guard an async tool: calling it synchronously would return an
-    unawaited coroutine, and Sakrit would record SUCCEEDED before the effect ran
-    (record-before-effect → a silently-lost effect on replay). Fail closed until a
-    real async settle path (guard_async) lands. See audit P1-1."""
-    if inspect.iscoroutinefunction(fn) or inspect.isasyncgenfunction(fn):
+def _is_lazy_iterator_fn(fn: Callable[..., object]) -> bool:
+    """A generator or async-generator function: *calling* it returns a lazy iterator and
+    runs none of the body. Guarding it would record SUCCEEDED before any effect ran
+    (V-1) — the same record-before-effect inversion as an un-awaited coroutine."""
+    return inspect.isgeneratorfunction(fn) or inspect.isasyncgenfunction(fn)
+
+
+def _reject_lazy(fn: Callable[..., object]) -> None:
+    """Refuse a generator / async-generator tool (V-1). Its body runs only on iteration,
+    so Sakrit would record SUCCEEDED without the effect. Collect the values inside a
+    plain (or async) function and return the result — Sakrit records after it runs."""
+    if _is_lazy_iterator_fn(fn):
         raise SakritError(
-            f"{getattr(fn, '__name__', fn)!r} is async; guarding it synchronously would "
-            "record success before the effect runs. Async tool support (guard_async) is "
-            "coming — do not guard an async def with sk.effect/guard yet."
+            f"{getattr(fn, '__name__', fn)!r} is a generator function; its body runs only "
+            "when iterated, so guarding it would record SUCCEEDED before any effect ran. "
+            "Collect the values inside a plain function and return the result."
         )
+
+
+def _reject_async(fn: Callable[..., object]) -> None:
+    """Refuse, on the *sync* guard path, anything whose effect wouldn't have run by the
+    time Sakrit records: an ``async def`` (use guard_async) or a generator (V-1)."""
+    if inspect.iscoroutinefunction(fn):
+        raise SakritError(
+            f"{getattr(fn, '__name__', fn)!r} is async; guard it with guard_async / "
+            "@sk.effect (which routes async defs), not the sync guard path — guarding it "
+            "synchronously would record success before the effect runs."
+        )
+    _reject_lazy(fn)
 
 
 def _bind(
@@ -213,6 +231,7 @@ class Sakrit:
         result. Against a multi-worker ledger this drives the *async leased* protocol
         (settle_leased_async); against a single-worker ledger, the async settle path. The
         effect is awaited before Sakrit records — no record-before-effect."""
+        _reject_lazy(fn)  # V-1: an async-generator is not awaitable; its body never runs
         rkey, rscope, fp, kw = self._prepare(decl, fn, args, kwargs, step, key, scope, occurrence)
         if self._leased:
             return await settle_leased_async(
@@ -296,7 +315,8 @@ class Sakrit:
         self._registry.setdefault(decl.tool, decl)  # available to recovery before first call
 
         def deco(fn: F) -> F:
-            if inspect.iscoroutinefunction(fn) or inspect.isasyncgenfunction(fn):
+            _reject_lazy(fn)  # V-1: refuse a generator / async-gen at decoration (import) time
+            if inspect.iscoroutinefunction(fn):
 
                 @functools.wraps(fn)
                 async def awrapper(*args: Any, **kwargs: Any) -> Any:
