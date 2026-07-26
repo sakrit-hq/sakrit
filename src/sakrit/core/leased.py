@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import logging
 import threading
 import time
 from collections.abc import Callable, Mapping
@@ -24,6 +25,8 @@ from sakrit.core.errors import AmbiguousOutcome, DivergentRetry
 from sakrit.core.ledger import ClaimKind, EffectState, SqliteLedger
 from sakrit.core.reconcile import Reconciliation, Verdict
 from sakrit.core.seams import seam
+
+logger = logging.getLogger("sakrit")
 
 # Sentinel: reconcile-on-takeover decided the effect did NOT land → re-dispatch it.
 _DISPATCH = object()
@@ -68,9 +71,16 @@ def _start_heartbeat(
 
     def _beat() -> None:
         # Renew until told to stop. wait() returns True the instant stop is set, so the
-        # thread joins promptly the moment dispatch completes.
+        # thread joins promptly the moment dispatch completes. V-8: a heartbeat that
+        # dies silently lets the lease expire → a live owner is presumed dead and a peer
+        # takes over mid-dispatch. Never die silently: log and keep trying; a False
+        # renewal (row gone / lease lost) is a warning too.
         while not stop.wait(period):
-            ledger.heartbeat(key, ledger.owner, lease_seconds)
+            try:
+                if not ledger.heartbeat(key, ledger.owner, lease_seconds):
+                    logger.warning("sakrit: heartbeat for %s did not renew (lease lost?)", key)
+            except Exception:  # noqa: BLE001 — a transient DB error must not kill the beat
+                logger.exception("sakrit: heartbeat for %s raised; will retry", key)
 
     thread = threading.Thread(target=_beat, name=f"sakrit-heartbeat-{key}", daemon=True)
     thread.start()
@@ -193,7 +203,13 @@ def _start_heartbeat_async(
                 await asyncio.wait_for(stop.wait(), timeout=period)
                 return  # stop set → done
             except asyncio.TimeoutError:
-                ledger.heartbeat(key, ledger.owner, lease_seconds)
+                # V-8: never let the renewal die silently (that presumes a live owner
+                # dead). Log a raise / a False renewal and keep beating.
+                try:
+                    if not ledger.heartbeat(key, ledger.owner, lease_seconds):
+                        logger.warning("sakrit: heartbeat for %s did not renew (lease lost?)", key)
+                except Exception:  # noqa: BLE001
+                    logger.exception("sakrit: heartbeat for %s raised; will retry", key)
 
     return stop, asyncio.ensure_future(_beat())
 

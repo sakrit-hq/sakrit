@@ -8,7 +8,10 @@ the remaining Act III-M work.
 
 import asyncio
 import json
+import logging
+import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -747,3 +750,41 @@ def test_v5c_transient_reconcile_error_then_retry_still_reconciles() -> None:
     )
     assert out == "provider-record"  # the retry reconciled → adopted
     assert calls == []  # never blind re-dispatched
+
+
+def test_heartbeat_error_does_not_kill_the_beat_or_dispatch(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # V-8: a heartbeat that raises must not die silently (the lease would expire → a live
+    # owner presumed dead). The beat logs and keeps going; the dispatch still completes.
+    class FlakyHeartbeat(SqliteLedger):
+        raised = False
+
+        def heartbeat(self, key, owner, lease_seconds, now=None):  # type: ignore[no-untyped-def]
+            if not self.raised:
+                self.raised = True
+                raise RuntimeError("transient DB blip")
+            return super().heartbeat(key, owner, lease_seconds, now=now)
+
+    led = FlakyHeartbeat(str(tmp_path / "l.db"), multi_worker=True)
+
+    def slow() -> str:
+        time.sleep(0.12)
+        return "ok"
+
+    with caplog.at_level(logging.WARNING, logger="sakrit"):
+        out = settle_leased(
+            led,
+            key="k",
+            scope="s",
+            tool="t",
+            fingerprint="fp",
+            fn=slow,
+            lease_seconds=0.09,
+            heartbeat_interval=0.03,
+        )
+    assert out == "ok"
+    assert led.state_of("k") is EffectState.SUCCEEDED  # dispatch completed despite the blip
+    assert "heartbeat" in caplog.text  # the error was surfaced, not silent
+    led.close()
