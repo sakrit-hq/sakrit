@@ -57,21 +57,40 @@ def resolve_coordinate(
 ) -> Coordinate:
     """Resolve a coordinate from the first available ladder rung.
 
-    1. **Runtime coordinate** — ``adapter.current_coordinate()``.
-    2. **Developer-declared step id** — ``step`` (requires a ``scope``).
-    3. **Explicit business key** — ``key`` (globally scoped by construction).
+    1. **Explicit business key** — ``key`` (globally scoped by construction).
+    2. **Runtime coordinate** — ``adapter.current_coordinate()``.
+    3. **Developer-declared step id** — ``step`` (requires a ``scope``).
     4. **Refuse** — :class:`NoCoordinateError`.
+
+    An explicit ``key`` outranks the runtime coordinate (P4-2): *a business key names
+    one action, not one tool.* When the developer asserts identity directly, that is
+    the ground truth — the adapter's positional guess must not override it, or two
+    call sites for the same business action would mint two keys. Combining ``key`` with
+    ``step`` is contradictory (two identities for one effect) and refuses.
 
     Args-hashing appears on no rung: where identity can't be established, we refuse
     loudly rather than fabricate a wrong identity.
     """
-    # Rung 1 — runtime coordinate.
+    # Rung 1 — explicit business key. It names one action globally, so it outranks
+    # even a runtime coordinate. A step alongside it is a second, conflicting identity.
+    if key is not None:
+        if step is not None:
+            raise NoCoordinateError(
+                f"both key={key!r} and step={step!r} were given — two different identities "
+                "for one effect. A business key names one action globally; a step names a "
+                "position within a run. Pass exactly one."
+            )
+        return Coordinate(
+            scope=scope or _BUSINESS_SCOPE, call_site=key.encode("utf-8"), occurrence=occurrence
+        )
+
+    # Rung 2 — runtime coordinate.
     if adapter is not None:
         coord = adapter.current_coordinate()
         if coord is not None:
             return coord
 
-    # Rung 2 — developer-declared step id. A step names a position *within a run*,
+    # Rung 3 — developer-declared step id. A step names a position *within a run*,
     # so it needs a scope; without one it can't isolate runs and we won't guess.
     if step is not None:
         if scope is None:
@@ -81,14 +100,8 @@ def resolve_coordinate(
             )
         return Coordinate(scope=scope, call_site=step.encode("utf-8"), occurrence=occurrence)
 
-    # Rung 3 — explicit business key (self-scoping).
-    if key is not None:
-        return Coordinate(
-            scope=scope or _BUSINESS_SCOPE, call_site=key.encode("utf-8"), occurrence=occurrence
-        )
-
     # Rung 4 — refuse.
     raise NoCoordinateError(
-        "no coordinate for a consequential effect: supply an adapter (runtime "
-        "coordinate), a step= id (with scope=), or a key= business key"
+        "no coordinate for a consequential effect: supply a key= business key, an "
+        "adapter (runtime coordinate), or a step= id (with scope=)"
     )

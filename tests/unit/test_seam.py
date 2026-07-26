@@ -32,13 +32,27 @@ def test_coordinate_is_immutable_and_hashable() -> None:
 
 
 # --- the coordinate ladder (design.md §4) ---------------------------------
-def test_ladder_rung1_runtime_coordinate_wins() -> None:
+def test_ladder_rung1_explicit_key_wins_over_adapter() -> None:
+    # P4-2: an explicit key names one action, so it outranks the runtime coordinate.
     adapter = FakeAdapter(scope="run-1")
     adapter.at("send-email")
-    # step/key are ignored when the adapter supplies a coordinate.
-    coord = resolve_coordinate(adapter, step="ignored", key="ignored")
+    coord = resolve_coordinate(adapter, key="invoice-8841-charge")
+    assert coord.scope == "global"
+    assert coord.call_site == b"invoice-8841-charge"
+
+
+def test_ladder_rung2_adapter_coordinate_when_no_key() -> None:
+    adapter = FakeAdapter(scope="run-1")
+    adapter.at("send-email")
+    # No key → the adapter's runtime coordinate wins over a step.
+    coord = resolve_coordinate(adapter, step="ignored")
     assert coord.scope == "run-1"
     assert coord.call_site == b"send-email"
+
+
+def test_ladder_key_and_step_together_refuses() -> None:
+    with pytest.raises(NoCoordinateError, match="two different identities"):
+        resolve_coordinate(key="invoice-8841-charge", step="welcome-email")
 
 
 def test_ladder_rung2_developer_step() -> None:
