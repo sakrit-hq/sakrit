@@ -13,6 +13,7 @@ SQLite ledger under real thread concurrency (Postgres is a storage swap for scal
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Callable, Mapping
 
@@ -21,6 +22,29 @@ from sakrit.core.errors import AmbiguousOutcome, DivergentRetry
 from sakrit.core.ledger import ClaimKind, EffectState, SqliteLedger
 from sakrit.core.reconcile import Reconciliation, Verdict
 from sakrit.core.seams import seam
+
+
+def _start_heartbeat(
+    ledger: SqliteLedger, key: str, lease_seconds: float, interval: float | None
+) -> tuple[threading.Event, threading.Thread] | None:
+    """Extend our lease while ``fn`` runs, so a slow-but-alive owner is not presumed
+    dead (P3-5). Only in multi-worker mode: single-worker has no lease contention, and
+    its connection is thread-bound so a background writer would be illegal anyway.
+    Returns ``(stop_event, thread)`` or ``None`` if no heartbeat was started."""
+    if not ledger.multi_worker:
+        return None
+    period = interval if interval is not None else max(lease_seconds / 3.0, 0.001)
+    stop = threading.Event()
+
+    def _beat() -> None:
+        # Renew until told to stop. wait() returns True the instant stop is set, so the
+        # thread joins promptly the moment dispatch completes.
+        while not stop.wait(period):
+            ledger.heartbeat(key, ledger.owner, lease_seconds)
+
+    thread = threading.Thread(target=_beat, name=f"sakrit-heartbeat-{key}", daemon=True)
+    thread.start()
+    return stop, thread
 
 
 def settle_leased(
@@ -39,6 +63,7 @@ def settle_leased(
     reconcile: Callable[[str], Reconciliation] | None = None,
     on_absent: str = "surface",
     lease_seconds: float = 30.0,
+    heartbeat_interval: float | None = None,
     wait_timeout: float = 30.0,
     poll: float = 0.01,
 ) -> object:
@@ -107,9 +132,18 @@ def settle_leased(
             continue
         seam("after_mark_executing")
         set_token = _current_key.set(key)
+        heartbeat = _start_heartbeat(ledger, key, lease_seconds, heartbeat_interval)
         try:
-            result = fn(*args, **dict(kwargs or {}))
-            seam("after_dispatch")
+            try:
+                result = fn(*args, **dict(kwargs or {}))
+                seam("after_dispatch")
+            finally:
+                # Stop the heartbeat BEFORE any post-dispatch ledger write — the beat
+                # runs on a background thread sharing this connection.
+                if heartbeat is not None:
+                    stop, thread = heartbeat
+                    stop.set()
+                    thread.join()
         except BaseException as exc:
             if isinstance(exc, clean_failures):
                 ledger.fence(key, token, EffectState.FAILED)

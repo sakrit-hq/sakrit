@@ -295,3 +295,51 @@ def test_settle_leased_reconcilable_takeover_without_reconcile_fn_surfaces() -> 
         )
     assert calls == []
     assert led.state_of("k") is EffectState.AMBIGUOUS
+
+
+def test_settle_leased_heartbeats_during_slow_dispatch(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    # P3-5: a dispatch slower than the lease must renew the lease, or a live owner is
+    # presumed dead and a peer double-dispatches. Count the renewals during a slow fn.
+    import time as _time
+
+    beats: list[int] = []
+
+    class CountingLedger(SqliteLedger):
+        def heartbeat(self, key, owner, lease_seconds, now=None):  # type: ignore[no-untyped-def]
+            beats.append(1)
+            return super().heartbeat(key, owner, lease_seconds, now=now)
+
+    led = CountingLedger(str(tmp_path / "led.db"), multi_worker=True)
+
+    def slow() -> str:
+        _time.sleep(0.15)
+        return "ok"
+
+    out = settle_leased(
+        led,
+        key="k",
+        scope="s",
+        tool="t",
+        fingerprint="fp",
+        fn=slow,
+        lease_seconds=0.09,
+        heartbeat_interval=0.03,
+    )
+    assert out == "ok"
+    assert len(beats) >= 1  # the lease was renewed while the slow effect ran
+    assert led.state_of("k") is EffectState.SUCCEEDED
+
+
+def test_settle_leased_no_heartbeat_thread_in_single_worker() -> None:
+    # Single-worker has no lease contention and a thread-bound connection — no beat.
+    beats: list[int] = []
+
+    class CountingLedger(SqliteLedger):
+        def heartbeat(self, key, owner, lease_seconds, now=None):  # type: ignore[no-untyped-def]
+            beats.append(1)
+            return super().heartbeat(key, owner, lease_seconds, now=now)
+
+    led = CountingLedger()  # single-worker, :memory:
+    out = settle_leased(led, key="k", scope="s", tool="t", fingerprint="fp", fn=lambda: "x")
+    assert out == "x"
+    assert beats == []

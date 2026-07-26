@@ -143,6 +143,12 @@ class SqliteLedger:
             self.conn.execute("PRAGMA busy_timeout=5000")  # concurrent writers wait, don't error
         self.conn.executescript(_SCHEMA)
 
+    @property
+    def multi_worker(self) -> bool:
+        """Whether this ledger coordinates concurrent workers (leases + fencing). Off →
+        a single-thread-bound connection; a background writer (heartbeat) is illegal."""
+        return self._multi_worker
+
     def _db_now(self) -> float:
         """Wall-clock seconds from the DB's own clock — the single source of truth
         for lease math (worker clock skew must not decide expiry; Q21)."""
