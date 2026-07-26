@@ -194,6 +194,10 @@ def settle_leased(
         token = claim.fencing_token
 
         if claim.kind is ClaimKind.RECONCILE:
+            # We own the row (EXECUTING preserved, our token + lease) but the verdict does
+            # not exist yet — the exact window V-5 defends. A kill here must leave the row
+            # re-decidable, so the next taker still RECONCILEs (never a blind PROCEED).
+            seam("during_reconcile_takeover")
             outcome = _reconcile_on_takeover(ledger, key, token, reconcile, on_absent, fingerprint)
             if outcome is not _DISPATCH:
                 return outcome
@@ -353,6 +357,10 @@ async def settle_leased_async(
         # PROCEED / RECONCILE — we hold the lease and a fencing token.
         token = claim.fencing_token
         if claim.kind is ClaimKind.RECONCILE:
+            # We own the row (EXECUTING preserved, our token + lease) but the verdict does
+            # not exist yet — the exact window V-5 defends. A kill here must leave the row
+            # re-decidable, so the next taker still RECONCILEs (never a blind PROCEED).
+            seam("during_reconcile_takeover")
             outcome = _reconcile_on_takeover(ledger, key, token, reconcile, on_absent, fingerprint)
             if outcome is not _DISPATCH:
                 return outcome

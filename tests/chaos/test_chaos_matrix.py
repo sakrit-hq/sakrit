@@ -154,6 +154,11 @@ def test_unguarded_control_duplicates(tmp_path: Path) -> None:
     assert _world_count(tmp_path) == 2
 
 
+# The 1-second lease is measured on the whole-second DB clock, so its effective life is up
+# to ~2s; sleep 3s (plus process-startup slack) before a takeover to clear it on slow CI.
+_LEASE_EXPIRY_SLEEP = 3.0
+
+
 def test_leased_l1_takeover_survives_a_real_kill(tmp_path: Path) -> None:
     # P2-4 / V-4: the leased path, killed for real. Worker A (L1, multi-worker, 1s lease)
     # delivers to the world, then a hard os._exit kills it mid-dispatch — its row is left
@@ -161,8 +166,46 @@ def test_leased_l1_takeover_survives_a_real_kill(tmp_path: Path) -> None:
     # ladder: RECONCILE finds A's delivery → adopts it. Exactly-once holds across a real
     # kill + a real lease-expiry takeover — the P1-2 Critical, finally killed.
     assert _run(tmp_path, "L1", "after_world_write", leased=True) == _KILL_CODE  # deliver, die
-    time.sleep(2.1)  # let A's 1-second lease expire (DB clock is whole seconds)
+    time.sleep(_LEASE_EXPIRY_SLEEP)  # let A's lease expire
     assert _run(tmp_path, "L1", None, leased=True) == 0  # B takes over, reconciles, adopts
+
+    assert _world_count(tmp_path) == 1, f"world deliveries: {_world_count(tmp_path)}"
+    assert "SUCCEEDED" in _ledger_states(tmp_path), f"ledger states: {_ledger_states(tmp_path)}"
+
+
+def test_leased_l0_forbidden_takeover_under_kill(tmp_path: Path) -> None:
+    # L0-leased: A delivers then dies mid-dispatch (EXECUTING, no provider cooperation). B
+    # takes over an L0 in-flight row — forbidden (no safe retry) → AMBIGUOUS, world stays 1.
+    assert _run(tmp_path, "L0", "after_world_write", leased=True) == _KILL_CODE
+    time.sleep(_LEASE_EXPIRY_SLEEP)
+    assert _run(tmp_path, "L0", None, leased=True) == 0  # B surfaces AMBIGUOUS, exits clean
+
+    assert _world_count(tmp_path) == 1, f"world deliveries: {_world_count(tmp_path)}"
+    assert "AMBIGUOUS" in _ledger_states(tmp_path), f"ledger states: {_ledger_states(tmp_path)}"
+
+
+def test_leased_l2_takeover_dedups_under_kill(tmp_path: Path) -> None:
+    # L2-leased: A delivers (keyed) then dies. B takes over within TTL → re-dispatches; the
+    # provider dedups on the same key → no second delivery, row SUCCEEDED, world 1.
+    assert _run(tmp_path, "L2", "after_world_write", leased=True) == _KILL_CODE
+    time.sleep(_LEASE_EXPIRY_SLEEP)
+    assert _run(tmp_path, "L2", None, leased=True) == 0
+
+    assert _world_count(tmp_path) == 1, f"world deliveries: {_world_count(tmp_path)}"
+    assert "SUCCEEDED" in _ledger_states(tmp_path), f"ledger states: {_ledger_states(tmp_path)}"
+
+
+def test_leased_taker_killed_mid_reconcile_still_adopts(tmp_path: Path) -> None:
+    # V-5a's crash variant, finally killable: A (L1) delivers then dies. B takes over
+    # (RECONCILE) but is hard-killed *inside the reconcile-takeover window* — the exact spot
+    # the V-5 preserve-EXECUTING fix defends. The row must stay EXECUTING (not downgraded),
+    # so a third worker C still RECONCILEs and adopts A's delivery. World stays 1.
+    assert _run(tmp_path, "L1", "after_world_write", leased=True) == _KILL_CODE  # A delivers, dies
+    time.sleep(_LEASE_EXPIRY_SLEEP)
+    # B takes over (RECONCILE) then dies inside the reconcile window.
+    assert _run(tmp_path, "L1", "during_reconcile_takeover", leased=True) == _KILL_CODE
+    time.sleep(_LEASE_EXPIRY_SLEEP)
+    assert _run(tmp_path, "L1", None, leased=True) == 0  # C reconciles, adopts
 
     assert _world_count(tmp_path) == 1, f"world deliveries: {_world_count(tmp_path)}"
     assert "SUCCEEDED" in _ledger_states(tmp_path), f"ledger states: {_ledger_states(tmp_path)}"
