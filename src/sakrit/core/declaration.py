@@ -15,6 +15,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 
+from sakrit.core.errors import SakritError
 from sakrit.core.reconcile import Reconciliation
 
 
@@ -58,6 +59,31 @@ class EffectDecl:
     on_absent: str = "surface"
     """What recovery does when reconcile says ABSENT: ``surface`` (safe default for
     irreversible effects — a lagging read can lie) or ``retry`` (re-claimable)."""
+    provider_read: str = "eventual"
+    """The consistency of the reconcile read: ``strong`` (a miss means the effect truly
+    did not land) or ``eventual`` (a lagging replica may report ABSENT for an effect that
+    *did* land). Only a ``strong`` read may back ``on_absent="retry"`` (P1-7): an eventual
+    miss would re-execute a landed effect → duplicate. Default ``eventual`` — the safe
+    assumption; assert ``strong`` explicitly to unlock auto-retry."""
+
+    def __post_init__(self) -> None:
+        if self.on_absent not in ("surface", "retry"):
+            raise SakritError(f"on_absent must be 'surface' or 'retry', not {self.on_absent!r}")
+        if self.provider_read not in ("strong", "eventual"):
+            raise SakritError(
+                f"provider_read must be 'strong' or 'eventual', not {self.provider_read!r}"
+            )
+        if self.on_absent == "retry" and self.provider_read != "strong":
+            # §3 anti-reflex: the most dangerous recovery declaration must carry loud
+            # friction. Auto-retry on ABSENT re-executes an irreversible effect; it is
+            # only sound if the read cannot report a false ABSENT.
+            raise SakritError(
+                f"{self.tool}: on_absent='retry' auto-re-executes an effect the reconcile "
+                "read reported ABSENT — sound only with provider_read='strong'. An "
+                "eventually-consistent read can report ABSENT for an effect that landed, "
+                "minting a duplicate. Declare provider_read='strong' to assert the read "
+                "cannot lie, or use on_absent='surface'."
+            )
 
     @property
     def provider_dedup(self) -> bool:

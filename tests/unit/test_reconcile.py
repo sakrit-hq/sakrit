@@ -41,12 +41,15 @@ def _key(name: str) -> str:
     return positional_key(Coordinate("global", name.encode()), "crm.ticket")
 
 
-def _l1_decl(provider: QueryableProvider, *, on_absent: str = "surface") -> EffectDecl:
+def _l1_decl(
+    provider: QueryableProvider, *, on_absent: str = "surface", provider_read: str = "eventual"
+) -> EffectDecl:
     return EffectDecl(
         "crm.ticket",
         {"subject": ArgClass.IDENTITY},
         reconcile=provider.reconcile,
         on_absent=on_absent,
+        provider_read=provider_read,
     )
 
 
@@ -97,7 +100,7 @@ def test_l1_reconcile_absent_surfaces_by_default() -> None:
 def test_l1_reconcile_absent_retry_when_declared() -> None:
     led = SqliteLedger()
     provider = QueryableProvider()
-    decl = _l1_decl(provider, on_absent="retry")
+    decl = _l1_decl(provider, on_absent="retry", provider_read="strong")
     key = _key("crash")
     led.claim(key, "global", "crm.ticket", "fp", reconcilable=True)
     led.mark_executing(key)
