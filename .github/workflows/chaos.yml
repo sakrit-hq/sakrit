@@ -1,8 +1,8 @@
 name: Chaos
 
-# Act III kill-at-every-boundary suite. Runs on a schedule (not per-PR) because
-# it is slow and destructive by design, and its results are a credibility
-# artifact we publish. Also runnable on demand.
+# Act III kill-at-every-boundary suite, run daily as a published credibility
+# artifact (and on demand). The per-PR *merge gate* for the same suite lives in
+# ci.yml (P2-7) — this scheduled run is the ongoing-proof companion, not the gate.
 
 on:
   schedule:

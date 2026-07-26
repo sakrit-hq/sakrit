@@ -40,6 +40,26 @@ jobs:
       - name: Pytest (unit)
         run: uv run pytest tests/unit -m "not chaos"
 
+  chaos:
+    name: exactly-once under crashes (merge gate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Sync dependencies
+        run: uv sync --all-extras --dev
+
+      # P2-7: the kill-at-every-boundary matrix is "the do-not-launch gate" — so it must
+      # actually gate. It runs here on every PR (fast: subprocess kills over a temp DB),
+      # in addition to the daily published run in chaos.yml.
+      - name: Pytest (chaos)
+        run: uv run pytest tests/chaos -m chaos
+
   integration:
     name: adapter conformance + demo (LangGraph)
     runs-on: ubuntu-latest
