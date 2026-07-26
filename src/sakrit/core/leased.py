@@ -32,6 +32,29 @@ logger = logging.getLogger("sakrit")
 _DISPATCH = object()
 
 
+def _record_success_fenced(ledger: SqliteLedger, key: str, token: int, result: object) -> object:
+    """Record SUCCEEDED under our fence; if the fenced write is rejected, self-heal (V-7).
+
+    A rejected terminal fence means we lost ownership mid-flight (the heartbeat failed and
+    a peer took over) — but we *ran the effect and know its result*. Rather than drop that
+    evidence: if the row was ambiguated (a forbidden L0 takeover), heal it via
+    ``accept_late_evidence``; if a peer already settled it, adopt the recorded result; any
+    other state, surface. This is the sole sanctioned use of the late-evidence path."""
+    if ledger.fence(key, token, EffectState.SUCCEEDED, result=result):
+        return result
+    state = ledger.state_of(key)
+    if state is EffectState.AMBIGUOUS:
+        ledger.accept_late_evidence(key, result)  # spurious ambiguity, healed by the owner
+        logger.warning("sakrit: %s was ambiguated mid-flight; healed by late evidence", key)
+        return result
+    if state is EffectState.SUCCEEDED:
+        return ledger.recorded_result(key)  # a peer settled it → adopt the recorded truth
+    raise AmbiguousOutcome(
+        f"{key}: our result was rejected and the row is {state.value if state else None} — "
+        "lost the lease mid-flight and cannot safely record; resolve it"
+    )
+
+
 def _reconcile_on_takeover(
     ledger: SqliteLedger,
     key: str,
@@ -46,8 +69,7 @@ def _reconcile_on_takeover(
     fence ``AMBIGUOUS`` and raise. Shared by the sync and async leased loops."""
     rec = reconcile(key) if reconcile is not None else Reconciliation.unknown()
     if rec.verdict is Verdict.SETTLED:
-        ledger.fence(key, token, EffectState.SUCCEEDED, result=rec.result)
-        return rec.result
+        return _record_success_fenced(ledger, key, token, rec.result)  # V-7 self-heal on reject
     if rec.verdict is Verdict.ABSENT and on_absent == "retry":
         return _DISPATCH
     ledger.fence(key, token, EffectState.AMBIGUOUS)
@@ -181,7 +203,7 @@ def settle_leased(
             raise
         finally:
             _current_key.reset(set_token)
-        ledger.fence(key, token, EffectState.SUCCEEDED, result=result)
+        result = _record_success_fenced(ledger, key, token, result)  # V-7 self-heal on reject
         seam("after_record")
         return result
 
@@ -305,6 +327,6 @@ async def settle_leased_async(
             raise
         finally:
             _current_key.reset(set_token)
-        ledger.fence(key, token, EffectState.SUCCEEDED, result=result)
+        result = _record_success_fenced(ledger, key, token, result)  # V-7 self-heal on reject
         seam("after_record")
         return result

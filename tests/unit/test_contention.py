@@ -788,3 +788,38 @@ def test_heartbeat_error_does_not_kill_the_beat_or_dispatch(
     assert led.state_of("k") is EffectState.SUCCEEDED  # dispatch completed despite the blip
     assert "heartbeat" in caplog.text  # the error was surfaced, not silent
     led.close()
+
+
+def test_settle_leased_late_evidence_heals_a_mid_flight_ambiguation() -> None:
+    # V-7: the heartbeat failed and a forbidden takeover ambiguated our live row while we
+    # ran. Our terminal fence is rejected — but we KNOW the effect happened, so
+    # accept_late_evidence heals the spurious AMBIGUOUS to SUCCEEDED.
+    led = _led()
+
+    def fn() -> str:
+        led.conn.execute(
+            "UPDATE effects SET state = ? WHERE key = ?", (EffectState.AMBIGUOUS.value, "k")
+        )
+        return "did-happen"
+
+    out = settle_leased(led, key="k", scope="s", tool="t", fingerprint="fp", fn=fn)
+    assert out == "did-happen"
+    assert led.state_of("k") is EffectState.SUCCEEDED  # healed by the returning owner
+
+
+def test_settle_leased_adopts_peer_result_when_terminal_fence_rejected() -> None:
+    # V-7: a peer settled the row (SUCCEEDED) before our terminal fence → adopt the
+    # recorded truth, not our own copy.
+    led = _led()
+
+    def fn() -> str:
+        led.conn.execute(
+            "UPDATE effects SET state = ?, result = ?, fencing_token = fencing_token + 1 "
+            "WHERE key = ?",
+            (EffectState.SUCCEEDED.value, json.dumps("peer-result"), "k"),
+        )
+        return "our-result"
+
+    out = settle_leased(led, key="k", scope="s", tool="t", fingerprint="fp", fn=fn)
+    assert out == "peer-result"  # adopted the peer's recorded result
+    assert led.state_of("k") is EffectState.SUCCEEDED

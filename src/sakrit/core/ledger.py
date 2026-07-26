@@ -329,6 +329,19 @@ class SqliteLedger:
         row = self.conn.execute("SELECT state FROM effects WHERE key = ?", (key,)).fetchone()
         return None if row is None else EffectState(row[0])
 
+    def recorded_result(self, key: str) -> object:
+        """The result stored on ``key`` — the same decoding as a REPLAY (a ``Replayed``
+        marker for an unserializable result, else the decoded value). Raises if absent."""
+        row = self.conn.execute(
+            "SELECT result, result_ref FROM effects WHERE key = ?", (key,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(key)
+        result, result_ref = row
+        if result_ref is not None:
+            return Replayed(key, result_ref)
+        return None if result is None else json.loads(result)
+
     # --- the atomic claim -------------------------------------------------
     def claim(
         self,
