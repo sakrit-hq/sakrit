@@ -109,6 +109,12 @@ CREATE INDEX IF NOT EXISTS idx_scope_state ON effects (scope, state);
 """
 
 
+# Coordination-mode stamp, written to the SQLite header (PRAGMA user_version). 0 means
+# "unstamped" (fresh or legacy); a mismatched open is refused (P3-3).
+_MODE_SINGLE = 1
+_MODE_MULTI = 2
+
+
 class SqliteLedger:
     """A durable, single-writer ledger backed by SQLite."""
 
@@ -124,6 +130,15 @@ class SqliteLedger:
         self._lock_fd: int | None = None
         self._multi_worker = multi_worker
         self.owner = owner or f"worker-{os.getpid()}-{id(self):x}"
+        # P3-3: multi-worker coordination is *between* workers over one shared database.
+        # An in-memory DB is private to its connection, so N multi-worker processes would
+        # get N isolated ledgers — zero dedup, N× execution, silently. Refuse it.
+        if multi_worker and self._path == ":memory:":
+            raise SakritError(
+                "multi_worker=True needs a shared database, but path is ':memory:' — each "
+                "connection would get a private, empty ledger (no dedup across workers). "
+                "Pass a file path (or a Postgres backend, when it lands)."
+            )
         # Q13 — single-worker (default) is enforced with flock, so it's a *property*,
         # not a hope. In multi-worker mode, leases + fencing coordinate instead, so
         # the flock is intentionally skipped (a shared file DB, or Postgres for scale).
@@ -142,6 +157,25 @@ class SqliteLedger:
         if multi_worker:
             self.conn.execute("PRAGMA busy_timeout=5000")  # concurrent writers wait, don't error
         self.conn.executescript(_SCHEMA)
+        self._enforce_mode_stamp(multi_worker)
+
+    def _enforce_mode_stamp(self, multi_worker: bool) -> None:
+        """Stamp the database with its coordination mode and refuse a mismatched open
+        (P3-3). The fenced (multi-worker) and unfenced (single-worker) protocols disagree
+        on what EXECUTING *means*; letting them share one file corrupts exactly-once. The
+        stamp lives in the SQLite header (``user_version``), so the check is machine-made,
+        not caller-promised."""
+        want = _MODE_MULTI if multi_worker else _MODE_SINGLE
+        stamped = self.conn.execute("PRAGMA user_version").fetchone()[0]
+        if stamped == 0:  # freshly created (or a legacy pre-stamp DB) → claim it
+            self.conn.execute(f"PRAGMA user_version = {want}")
+        elif stamped != want:
+            have = "multi-worker" if stamped == _MODE_MULTI else "single-worker"
+            need = "multi-worker" if multi_worker else "single-worker"
+            raise SakritError(
+                f"ledger at {self._path!r} was created in {have} mode; refusing to open it "
+                f"{need}. The fenced and unfenced protocols must not share a database."
+            )
 
     @property
     def multi_worker(self) -> bool:

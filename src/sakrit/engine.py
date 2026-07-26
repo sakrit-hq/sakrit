@@ -67,6 +67,17 @@ class Sakrit:
         secret: bytes,
         adapter: RuntimeAdapter | None = None,
     ) -> None:
+        # P1-11: the engine drives the *single-worker* path only — guard → settle (the
+        # unfenced claim) and a mandatory startup recover() that reads EXECUTING as
+        # death-evidence. Against a multi-worker ledger that means ambiguating/re-owning
+        # peers' *live* rows. Refuse the composition until the leased loop is wired in
+        # (P3-8); the two protocols must not share the engine.
+        if ledger.multi_worker:
+            raise SakritError(
+                "Sakrit(ledger=...) drives the single-worker settle path, but this ledger "
+                "is multi_worker=True. The engine's startup recovery would poison live "
+                "peers' rows. Use single-worker mode, or drive settle_leased directly."
+            )
         self._ledger = ledger
         self._secret = secret
         self._adapter = adapter

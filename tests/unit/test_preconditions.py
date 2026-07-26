@@ -71,3 +71,42 @@ def test_guard_runs_recovery_once_before_first_effect() -> None:
     assert led.state_of(stale) is EffectState.AMBIGUOUS
     # …and the new effect executed exactly once.
     assert calls == ["a@x.com"]
+
+
+# --- P3-3 / P1-11: machine-checked multi-worker preconditions --------------
+def test_multi_worker_memory_is_refused() -> None:
+    # An in-memory DB is private per connection → N workers, N isolated ledgers.
+    with pytest.raises(SakritError, match="shared database"):
+        SqliteLedger(multi_worker=True)
+
+
+def test_mode_stamp_refuses_multi_open_of_single_worker_db(tmp_path: Path) -> None:
+    db = tmp_path / "l.sqlite"
+    single = SqliteLedger(db)  # stamps single-worker, holds the flock
+    try:
+        with pytest.raises(SakritError, match="single-worker mode"):
+            SqliteLedger(db, multi_worker=True)
+    finally:
+        single.close()
+
+
+def test_mode_stamp_refuses_single_open_of_multi_worker_db(tmp_path: Path) -> None:
+    db = tmp_path / "l.sqlite"
+    SqliteLedger(db, multi_worker=True).close()  # stamps multi-worker
+    with pytest.raises(SakritError, match="multi-worker mode"):
+        SqliteLedger(db)
+
+
+def test_same_mode_reopen_is_allowed(tmp_path: Path) -> None:
+    db = tmp_path / "l.sqlite"
+    SqliteLedger(db, multi_worker=True).close()
+    SqliteLedger(db, multi_worker=True).close()  # same mode → fine
+
+
+def test_engine_refuses_a_multi_worker_ledger(tmp_path: Path) -> None:
+    led = SqliteLedger(tmp_path / "l.sqlite", multi_worker=True)
+    try:
+        with pytest.raises(SakritError, match="multi_worker"):
+            Sakrit(led, secret=SECRET)
+    finally:
+        led.close()
