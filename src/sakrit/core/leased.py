@@ -21,7 +21,7 @@ import time
 from collections.abc import Callable, Mapping
 
 from sakrit.core.context import _current_key
-from sakrit.core.errors import AmbiguousOutcome, DivergentRetry
+from sakrit.core.errors import AmbiguousOutcome, DivergentRetry, SakritError
 from sakrit.core.ledger import ClaimKind, EffectState, SqliteLedger
 from sakrit.core.reconcile import Reconciliation, Verdict
 from sakrit.core.seams import seam
@@ -165,6 +165,10 @@ def settle_leased(
                 raise AmbiguousOutcome(f"{key}: timed out waiting for the lease owner")
             time.sleep(poll)
             continue
+        # P3-10(a): only PROCEED / RECONCILE dispatch. Guard against a future kind slipping
+        # into the dispatch path unhandled.
+        if claim.kind not in (ClaimKind.PROCEED, ClaimKind.RECONCILE):
+            raise SakritError(f"{key}: unexpected claim kind {claim.kind.value} in settle_leased")
 
         # PROCEED / RECONCILE — we hold the lease and a fencing token.
         token = claim.fencing_token
@@ -317,6 +321,8 @@ async def settle_leased_async(
                 raise AmbiguousOutcome(f"{key}: timed out waiting for the lease owner")
             await asyncio.sleep(poll)
             continue
+        if claim.kind not in (ClaimKind.PROCEED, ClaimKind.RECONCILE):  # P3-10(a)
+            raise SakritError(f"{key}: unexpected claim kind {claim.kind.value} in settle_leased")
 
         # PROCEED / RECONCILE — we hold the lease and a fencing token.
         token = claim.fencing_token

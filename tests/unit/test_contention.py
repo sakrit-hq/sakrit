@@ -856,3 +856,33 @@ def test_async_heartbeat_warns_when_the_effect_starves_the_loop(
     assert out == "ok"
     assert "late" in caplog.text  # the starvation was surfaced
     led.close()
+
+
+def test_clean_failed_fence_releases_the_lease() -> None:
+    # P3-10(b): a clean-FAILED row is re-claimable, but a live lease would make a peer
+    # BUSY-wait a whole lease before re-claiming. The terminal fence clears the lease so
+    # the next worker takes over immediately.
+    led = _led()
+    a = led.claim_leased("k", "s", "t", "fp", owner="A", now=100.0, lease_seconds=LEASE)
+    led.fence("k", a.fencing_token, EffectState.EXECUTING)
+    led.fence("k", a.fencing_token, EffectState.FAILED)  # clean failure
+    assert led.state_of("k") is EffectState.FAILED
+
+    # B claims *while A's lease would still be live* (now=110 < 100+30) — but the terminal
+    # fence released it, so B re-claims immediately instead of BUSY-waiting.
+    b = led.claim_leased("k", "s", "t", "fp", owner="B", now=110.0, lease_seconds=LEASE)
+    assert b.kind is ClaimKind.PROCEED
+
+
+def test_unexpected_claim_kind_is_refused_not_executed() -> None:
+    # P3-10(a): a leased-only kind must never silently execute on the sync settle path.
+    from sakrit.core import SakritError, settle
+    from sakrit.core.ledger import Claim, ClaimKind
+
+    class BusyLedger(SqliteLedger):
+        def claim(self, *a, **k):  # type: ignore[no-untyped-def]
+            return Claim(ClaimKind.BUSY)  # a kind the sync path must not proceed on
+
+    led = BusyLedger()
+    with pytest.raises(SakritError, match="unexpected claim kind"):
+        settle(led, key="k", scope="s", tool="t", fingerprint="fp", fn=lambda: 1)

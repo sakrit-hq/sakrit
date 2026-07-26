@@ -30,6 +30,7 @@ import os
 import sqlite3
 import threading
 import time
+import uuid
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -153,7 +154,9 @@ class SqliteLedger:
         self._path = str(path)
         self._lock_fd: int | None = None
         self._multi_worker = multi_worker
-        self.owner = owner or f"worker-{os.getpid()}-{id(self):x}"
+        # P3-10(e): a UUID owner id — `pid`+`id(self)` can repeat across container restarts
+        # (pid reuse) and object churn (id reuse after GC), colliding two distinct workers.
+        self.owner = owner or f"worker-{uuid.uuid4().hex}"
         # V-3: a multi_worker ledger is one connection == one worker. It runs with
         # check_same_thread=False (leases coordinate instead), so SQLite won't catch a
         # connection shared across worker threads — which defeats BEGIN IMMEDIATE's
@@ -729,10 +732,16 @@ class SqliteLedger:
         # holder overwrite SUCCEEDED with FAILED (un-settling a landed effect) or un-terminal
         # an AMBIGUOUS row; require the *source* state to be non-terminal (mid-flight). The
         # sanctioned AMBIGUOUS → SUCCEEDED healing goes through accept_late_evidence, not here.
+        # P3-10(b): a terminal fence also releases the lease. A clean-FAILED row is
+        # re-claimable, but with a live lease a peer would BUSY-wait a whole lease before
+        # re-claiming it; clearing the lease lets the next worker take over immediately.
         cur = self.conn.execute(
-            "UPDATE effects SET state = ?, result = ?, result_ref = ?, settled_at = ? "
+            "UPDATE effects SET state = ?, result = ?, result_ref = ?, settled_at = ?, "
+            "lease_owner = CASE WHEN ? THEN NULL ELSE lease_owner END, "
+            "lease_expires = CASE WHEN ? THEN NULL ELSE lease_expires END "
             "WHERE key = ? AND fencing_token = ? AND state NOT IN (?, ?, ?)",
-            (state.value, encoded, marker, _now() if terminal else None, key, token)
+            (state.value, encoded, marker, _now() if terminal else None)
+            + (terminal, terminal, key, token)
             + _TERMINAL_VALUES,
         )
         applied = cur.rowcount > 0

@@ -62,6 +62,10 @@ def _decide(
         raise AmbiguousOutcome(
             f"{key}: a prior attempt crashed after dispatch; outcome unknown — resolve it"
         )
+    # P3-10(a): only PROCEED reaches here. Never *assume* it — a future ClaimKind (BUSY,
+    # RECONCILE are leased-only) must not silently execute on the single-worker path.
+    if claim.kind is not ClaimKind.PROCEED:
+        raise SakritError(f"{key}: unexpected claim kind {claim.kind.value} on the sync path")
     return _PROCEED
 
 
