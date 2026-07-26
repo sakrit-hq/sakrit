@@ -30,5 +30,6 @@ uv.lock
 # Office temp files
 ~$*
 
-# Docs (kept local, not tracked)
+# Docs and research (kept local, not tracked)
 docs/
+research/
