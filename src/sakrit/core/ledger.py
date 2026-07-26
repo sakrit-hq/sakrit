@@ -9,10 +9,12 @@ commits *before* the effect dispatches, so a crash in the window leaves evidence
 Act II subset of the state machine::
 
     (new) --claim--> CLAIMED --mark--> EXECUTING --record--> SUCCEEDED
-                        ^                   |                    |
-                        └── re-claim ───────┘                    ├── error ──> FAILED
-                        (crash before dispatch: safe)            └── crash ──> (EXECUTING
-                                                                    stays; recovery → AMBIGUOUS)
+      ^                 |                   |                    |
+      │ claim           │ crash             │ crash             ├── clean-fail ──> FAILED
+      │ re-owns         v                   v                   └── crash ──> EXECUTING stays
+    INTENDED <──recover── (leftover)   recovery: L2 → INTENDED,
+    (recovery-blessed;                 L0 → AMBIGUOUS, L1/L2R → reconcile
+     the only re-claimable state — claim refuses live CLAIMED/EXECUTING, P3-1)
 
 L1/L2R reconciliation and the multi-worker contention protocol (leases, fencing,
 late evidence) are implemented below. What remains ("Act III-M"): a Postgres
@@ -127,7 +129,13 @@ class SqliteLedger:
             self._acquire_single_worker_lock()
         # isolation_level=None → autocommit; we drive BEGIN IMMEDIATE / COMMIT
         # ourselves so a claim is one atomic statement group.
-        self.conn = sqlite3.connect(self._path, isolation_level=None, check_same_thread=False)
+        # Single-worker is single-thread-per-connection (SQLite's own guard raises if
+        # a second thread touches this connection — the accidental protection the
+        # CLAIMED-race fix, P3-1, no longer relies on but should not remove). Only the
+        # multi-worker path, where each thread holds its own connection, opts out.
+        self.conn = sqlite3.connect(
+            self._path, isolation_level=None, check_same_thread=not multi_worker
+        )
         self._configure_durability(i_accept_data_loss)  # Q12
         if multi_worker:
             self.conn.execute("PRAGMA busy_timeout=5000")  # concurrent writers wait, don't error
@@ -243,18 +251,21 @@ class SqliteLedger:
                     claim = Claim(ClaimKind.REPLAY, result=result, fingerprint=row[2])
                 elif state is EffectState.AMBIGUOUS:
                     claim = Claim(ClaimKind.AMBIGUOUS)
-                elif state is EffectState.EXECUTING:
+                elif state in (EffectState.EXECUTING, EffectState.CLAIMED):
                     # No death-evidence in the claim path (single-worker ≠ single-
-                    # thread) → refuse to transition. Recovery is the sole owner of
-                    # EXECUTING → {AMBIGUOUS | re-claim}. (Applies to L2 too: one rule.)
+                    # thread — parallel branches / tool-calls can hold a *live* row) →
+                    # refuse to transition. Recovery is the sole owner of both
+                    # EXECUTING → {AMBIGUOUS | re-claimable} and CLAIMED → re-claimable;
+                    # it blesses a crash artifact as INTENDED, which we re-own below.
                     raise EffectInFlightError(
-                        f"{key}: row is EXECUTING — a concurrent guard of this key, or a "
+                        f"{key}: row is {state.value} — a concurrent guard of this key, or a "
                         "missed recovery. This transition belongs to recover() (run at "
                         "startup), not to claim."
                     )
                 else:
-                    # Re-own and retry: CLAIMED (crash before dispatch) or a declared
-                    # clean FAILED — the effect provably never completed.
+                    # Re-own and retry: INTENDED (recovery blessed a crash-before-dispatch
+                    # leftover) or a declared-clean FAILED — the effect provably never
+                    # completed. Fresh fingerprint for the retry.
                     self.conn.execute(
                         "UPDATE effects SET state = ?, fingerprint = ? WHERE key = ?",
                         (EffectState.CLAIMED.value, fingerprint, key),
@@ -299,14 +310,26 @@ class SqliteLedger:
 
     # --- recovery scan ----------------------------------------------------
     def recover(self) -> list[str]:
-        """Startup scan over `EXECUTING` (crash-in-window) rows.
+        """Startup scan (death-evidence: process start ⇒ nothing is in flight).
 
-        L0 rows → `AMBIGUOUS` (surfaced). L2 rows (provider-deduplicating, not
-        reconcilable) → `CLAIMED`, so the next attempt safely re-dispatches.
-        **Reconcilable rows (L1/L2R) are left `EXECUTING`** — only the engine has
-        their reconcile function; it resolves them via :meth:`pending_reconcile`.
+        - `CLAIMED` leftovers (crash *before* dispatch — nothing happened) → `INTENDED`
+          (recovery-blessed, re-claimable). Claim itself refuses `CLAIMED` (P3-1),
+          so recovery is the sole path to re-execution.
+        - L0 `EXECUTING` (crash in the window) → `AMBIGUOUS` (surfaced).
+        - L2 `EXECUTING` (provider-deduplicating) → `INTENDED`, so the next attempt
+          safely re-dispatches.
+        - Reconcilable `EXECUTING` (L1/L2R) → left for the engine (:meth:`pending_reconcile`).
+
         Returns the keys left `AMBIGUOUS`.
         """
+        for (key,) in self.conn.execute(
+            "SELECT key FROM effects WHERE state = ?", (EffectState.CLAIMED.value,)
+        ).fetchall():
+            self.conn.execute(
+                "UPDATE effects SET state = ? WHERE key = ?", (EffectState.INTENDED.value, key)
+            )
+            seam("during_recovery")
+
         rows = self.conn.execute(
             "SELECT key, provider_dedup, reconcilable FROM effects WHERE state = ?",
             (EffectState.EXECUTING.value,),
@@ -317,7 +340,7 @@ class SqliteLedger:
                 pass  # engine-driven; see pending_reconcile()
             elif dedup:
                 self.conn.execute(
-                    "UPDATE effects SET state = ? WHERE key = ?", (EffectState.CLAIMED.value, key)
+                    "UPDATE effects SET state = ? WHERE key = ?", (EffectState.INTENDED.value, key)
                 )
             else:
                 self.conn.execute(
@@ -342,10 +365,11 @@ class SqliteLedger:
         self.record_success(key, result)
 
     def reclaim(self, key: str) -> None:
-        """Reconcile found the effect ABSENT (or it's a re-dispatchable leftover) —
-        make it re-claimable."""
+        """Reconcile (inside recover, so death-evidence holds) found the effect ABSENT —
+        bless it re-claimable as `INTENDED`. The next `claim` re-owns it (P3-1: `claim`
+        refuses `CLAIMED`, so re-ownership must route through the INTENDED marker)."""
         self.conn.execute(
-            "UPDATE effects SET state = ? WHERE key = ?", (EffectState.CLAIMED.value, key)
+            "UPDATE effects SET state = ? WHERE key = ?", (EffectState.INTENDED.value, key)
         )
 
     def ambiguate(self, key: str) -> None:

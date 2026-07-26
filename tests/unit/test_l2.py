@@ -73,9 +73,9 @@ def test_l2_crash_in_window_redispatches_and_dedups() -> None:
     provider.charge(customer="c1", amount_cents=4000, idempotency_key=key)
     assert provider.count == 1
 
-    # Restart: recovery leaves an L2 leftover re-claimable (not AMBIGUOUS).
+    # Restart: recovery blesses an L2 leftover as INTENDED (re-claimable, not AMBIGUOUS).
     assert led.recover() == []
-    assert led.state_of(key) is EffectState.CLAIMED
+    assert led.state_of(key) is EffectState.INTENDED
 
     # Re-dispatch: the tool reads current_key() → same key → the provider dedups.
     def charge() -> dict[str, str]:

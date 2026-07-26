@@ -107,7 +107,8 @@ def test_l1_reconcile_absent_retry_when_declared() -> None:
     sk.recover()
 
     # Declared retry-safe → re-claimable (the effect provably didn't happen).
-    assert led.state_of(key) is EffectState.CLAIMED
+    # Recovery blesses it INTENDED; the next claim re-owns it (P3-1).
+    assert led.state_of(key) is EffectState.INTENDED
 
 
 def test_l1_reconcile_unknown_stays_ambiguous() -> None:
