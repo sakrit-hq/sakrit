@@ -13,7 +13,10 @@ from __future__ import annotations
 
 import functools
 import inspect
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import Any, TypeVar
 
 from sakrit.core.adapter import RuntimeAdapter, resolve_coordinate
@@ -26,6 +29,20 @@ from sakrit.core.reconcile import Verdict
 from sakrit.core.settle import settle
 
 F = TypeVar("F", bound=Callable[..., Any])
+
+
+@dataclass(frozen=True)
+class _StepCtx:
+    """Coordinate overrides active for the duration of a ``sk.step(...)`` block."""
+
+    step: str | None
+    occurrence: int
+    scope: str | None
+
+
+# The active sk.step() context, if any. Per-task via contextvars, so concurrent
+# branches don't clobber each other's occurrence.
+_step_ctx: ContextVar[_StepCtx | None] = ContextVar("sakrit_step_ctx", default=None)
 
 
 def _reject_async(fn: Callable[..., object]) -> None:
@@ -94,7 +111,7 @@ class Sakrit:
         step: str | None = None,
         key: str | None = None,
         scope: str | None = None,
-        occurrence: int = 1,
+        occurrence: int | None = None,
     ) -> object:
         """Run ``fn`` exactly once for its logical step, or replay its saved result."""
         _reject_async(fn)
@@ -107,10 +124,17 @@ class Sakrit:
             self._recovered = True
             self.recover()
 
+        # Merge an active sk.step(...) block: an explicit arg to guard wins; else the
+        # context supplies it (P4-1 — distinct occurrences for repeats at one call site).
+        ctx = _step_ctx.get()
+        eff_step = step if step is not None else (ctx.step if ctx else None)
+        eff_scope = scope if scope is not None else (ctx.scope if ctx else None)
+        eff_occurrence = occurrence if occurrence is not None else (ctx.occurrence if ctx else 1)
+
         kw = dict(kwargs or {})
         named = _bind(fn, args, kw)
         coord = resolve_coordinate(
-            self._adapter, scope=scope, step=step, key=key, occurrence=occurrence
+            self._adapter, scope=eff_scope, step=eff_step, key=key, occurrence=eff_occurrence
         )
         return settle(
             self._ledger,
@@ -151,8 +175,14 @@ class Sakrit:
         step: str | None = None,
         key: str | None = None,
         scope: str | None = None,
+        occurrence: int | None = None,
     ) -> Callable[[F], F]:
-        """Decorator form: wrap a tool so every call is guarded."""
+        """Decorator form: wrap a tool so every call is guarded.
+
+        A fixed ``occurrence`` here freezes one coordinate per call site. For repeats at
+        one site (a loop, deliberate resend, or parallel same-tool calls), leave it and
+        wrap the call in :meth:`step` so each iteration gets a distinct coordinate (P4-1).
+        """
         self._registry.setdefault(decl.tool, decl)  # available to recovery before first call
 
         def deco(fn: F) -> F:
@@ -161,9 +191,41 @@ class Sakrit:
             @functools.wraps(fn)
             def wrapper(*args: Any, **kwargs: Any) -> Any:
                 return self.guard(
-                    decl, fn, args=args, kwargs=kwargs, step=step, key=key, scope=scope
+                    decl,
+                    fn,
+                    args=args,
+                    kwargs=kwargs,
+                    step=step,
+                    key=key,
+                    scope=scope,
+                    occurrence=occurrence,
                 )
 
             return wrapper  # type: ignore[return-value]
 
         return deco
+
+    @contextmanager
+    def step(
+        self, name: str | None = None, *, occurrence: int = 1, scope: str | None = None
+    ) -> Iterator[None]:
+        """Scope a block to a distinct coordinate position (P4-1).
+
+        The same tool called repeatedly at one call site — a loop, a deliberate resend,
+        or parallel same-tool calls in one node — otherwise collides on one key: the
+        repeat is silently swallowed (identical args) or loudly refused (``DivergentRetry``,
+        differing args). Wrap each repeat so it gets its own coordinate::
+
+            for i, r in enumerate(recipients):
+                with sk.step(occurrence=i):
+                    send_email(to=r)
+
+        WARNING: this is the manual mechanism. Sakrit does **not** yet fold repetition
+        automatically (see ``docs/dev-notes/occurrence.md``); until it does, an unwrapped
+        repeat at one call site is a latent swallow/halt.
+        """
+        token = _step_ctx.set(_StepCtx(step=name, occurrence=occurrence, scope=scope))
+        try:
+            yield
+        finally:
+            _step_ctx.reset(token)
