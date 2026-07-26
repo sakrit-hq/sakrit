@@ -343,3 +343,33 @@ def test_settle_leased_no_heartbeat_thread_in_single_worker() -> None:
     out = settle_leased(led, key="k", scope="s", tool="t", fingerprint="fp", fn=lambda: "x")
     assert out == "x"
     assert beats == []
+
+
+def test_fence_cannot_overwrite_a_terminal_success() -> None:
+    # P3-6a: SUCCEEDED is write-once — even the current-token holder can't un-settle it.
+    led = _led()
+    a = led.claim_leased("k", "s", "t", "fp", owner="A", now=100.0, lease_seconds=LEASE)
+    led.fence("k", a.fencing_token, EffectState.EXECUTING)
+    assert led.fence("k", a.fencing_token, EffectState.SUCCEEDED, result="done") is True
+    # Same valid token, but the row is now terminal → the FAILED write is rejected.
+    assert led.fence("k", a.fencing_token, EffectState.FAILED) is False
+    assert led.state_of("k") is EffectState.SUCCEEDED
+
+
+def test_forbidden_takeover_bumps_fence_and_row_is_write_once() -> None:
+    # P3-6b: the L0 forbidden takeover bumps the token (so a returning zombie is fenced),
+    # and P3-6a makes the resulting AMBIGUOUS row write-once from any token.
+    led = _led()
+    a = led.claim_leased("k", "s", "t", "fp", owner="A", now=100.0, lease_seconds=LEASE)
+    led.fence("k", a.fencing_token, EffectState.EXECUTING)
+    led.claim_leased("k", "s", "t", "fp", owner="B", now=200.0, lease_seconds=LEASE)  # forbidden
+    assert led.state_of("k") is EffectState.AMBIGUOUS
+
+    current = led.conn.execute("SELECT fencing_token FROM effects WHERE key = 'k'").fetchone()[0]
+    assert current == a.fencing_token + 1  # bumped
+
+    # Zombie A returns with its stale token → rejected (stale token AND write-once).
+    assert led.fence("k", a.fencing_token, EffectState.SUCCEEDED, result="from-A") is False
+    # Even the current token cannot un-terminal the AMBIGUOUS row.
+    assert led.fence("k", current, EffectState.EXECUTING) is False
+    assert led.state_of("k") is EffectState.AMBIGUOUS

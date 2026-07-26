@@ -54,6 +54,11 @@ class EffectState(Enum):
     AMBIGUOUS = "AMBIGUOUS"
 
 
+# Terminal states are write-once — a settled outcome must not be overwritten (P3-6a).
+_TERMINAL_STATES = (EffectState.SUCCEEDED, EffectState.FAILED, EffectState.AMBIGUOUS)
+_TERMINAL_VALUES = tuple(s.value for s in _TERMINAL_STATES)
+
+
 class ClaimKind(Enum):
     PROCEED = "proceed"  # we own a fresh/re-claimable row — execute it
     REPLAY = "replay"  # already SUCCEEDED — return the saved result (check fp)
@@ -544,8 +549,12 @@ class SqliteLedger:
                     claim = Claim(ClaimKind.BUSY)  # a live owner holds it
                 elif state is EffectState.EXECUTING and not (provider_dedup or reconcilable):
                     # L0 expired-lease takeover is forbidden — no safe retry exists.
+                    # P3-6b: bump the fence so the presumed-dead owner's stale-token write
+                    # is rejected if it returns — "zombie writes are rejected" must hold on
+                    # this path too, not rely on the accidental un-bumped token.
                     self.conn.execute(
-                        "UPDATE effects SET state = ?, settled_at = ? WHERE key = ?",
+                        "UPDATE effects SET state = ?, fencing_token = fencing_token + 1, "
+                        "settled_at = ? WHERE key = ?",
                         (EffectState.AMBIGUOUS.value, _now(), key),
                     )
                     self._tell_ambiguous(key, "L0 lease expired mid-dispatch (forbidden takeover)")
@@ -589,7 +598,7 @@ class SqliteLedger:
         carries a stale token, so its writes are rejected — it cannot corrupt a row
         it no longer owns.
         """
-        terminal = state in (EffectState.SUCCEEDED, EffectState.FAILED, EffectState.AMBIGUOUS)
+        terminal = state in _TERMINAL_STATES
         encoded: str | None = None
         marker: str | None = None
         if state is EffectState.SUCCEEDED:
@@ -600,10 +609,15 @@ class SqliteLedger:
                 encoded = json.dumps(result)
             except (TypeError, ValueError):
                 marker = f"unserializable:{type(result).__name__}"
+        # P3-6a: terminal states are write-once. The token guard alone let a current-token
+        # holder overwrite SUCCEEDED with FAILED (un-settling a landed effect) or un-terminal
+        # an AMBIGUOUS row; require the *source* state to be non-terminal (mid-flight). The
+        # sanctioned AMBIGUOUS → SUCCEEDED healing goes through accept_late_evidence, not here.
         cur = self.conn.execute(
             "UPDATE effects SET state = ?, result = ?, result_ref = ?, settled_at = ? "
-            "WHERE key = ? AND fencing_token = ?",
-            (state.value, encoded, marker, _now() if terminal else None, key, token),
+            "WHERE key = ? AND fencing_token = ? AND state NOT IN (?, ?, ?)",
+            (state.value, encoded, marker, _now() if terminal else None, key, token)
+            + _TERMINAL_VALUES,
         )
         applied = cur.rowcount > 0
         if applied and state is EffectState.AMBIGUOUS:
@@ -628,6 +642,14 @@ class SqliteLedger:
         AMBIGUOUS has no live owner, and the zombie is the only party that knows
         what happened — so the write strictly increases information and is accepted
         (self-healing spurious ambiguity). Applies only while the row is AMBIGUOUS.
+
+        This is the **sole sanctioned path** that resolves an AMBIGUOUS row (P3-6/P3-7):
+        ``fence`` is write-once and cannot touch a terminal row, so ambiguity no longer
+        heals by accident through a stale fenced write. Discipline/limits still open
+        (deferred to the engine-wired leased loop, P3-8): the write is honor-system — it
+        trusts the caller to be the returning owner (no token/owner check, because a bumped
+        fence has already invalidated the zombie's token) — and it is success-only; a zombie
+        that knows it *cleanly failed* cannot yet contribute that (row-freeing) evidence.
         """
         cur = self.conn.execute(
             "UPDATE effects SET state = ?, result = ?, resolved_by = ?, settled_at = ? "
