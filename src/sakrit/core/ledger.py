@@ -25,9 +25,10 @@ Deferred to Act IV: ``BUFFERED`` (the outbox / approval gating).
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -35,6 +36,8 @@ from pathlib import Path
 
 from sakrit.core.errors import EffectInFlightError, SakritError
 from sakrit.core.seams import seam
+
+logger = logging.getLogger("sakrit")
 
 try:
     import fcntl  # POSIX advisory locking
@@ -125,11 +128,16 @@ class SqliteLedger:
         i_accept_data_loss: bool = False,
         multi_worker: bool = False,
         owner: str | None = None,
+        on_ambiguous: Callable[[str], None] | None = None,
     ) -> None:
         self._path = str(path)
         self._lock_fd: int | None = None
         self._multi_worker = multi_worker
         self.owner = owner or f"worker-{os.getpid()}-{id(self):x}"
+        # P1-6: the differentiating half of the guarantee is "…or tells you it couldn't."
+        # Every transition *into* AMBIGUOUS routes through _tell_ambiguous, which logs a
+        # warning (never silent) and fires this optional alert/metric hook.
+        self._on_ambiguous = on_ambiguous
         # P3-3: multi-worker coordination is *between* workers over one shared database.
         # An in-memory DB is private to its connection, so N multi-worker processes would
         # get N isolated ledgers — zero dedup, N× execution, silently. Refuse it.
@@ -390,6 +398,7 @@ class SqliteLedger:
                     (EffectState.AMBIGUOUS.value, _now(), key),
                 )
                 ambiguous.append(key)
+                self._tell_ambiguous(key, "L0 effect crashed in the dispatch window")
             seam("during_recovery")  # kill mid-scan; recovery must be idempotent over itself
         return ambiguous
 
@@ -420,6 +429,20 @@ class SqliteLedger:
             "UPDATE effects SET state = ?, settled_at = ? WHERE key = ?",
             (EffectState.AMBIGUOUS.value, _now(), key),
         )
+        self._tell_ambiguous(key, "reconcile could not determine the outcome")
+
+    def _tell_ambiguous(self, key: str, reason: str) -> None:
+        """Announce that a row is now AMBIGUOUS (P1-6). Ambiguity is never silent: a
+        crash left an effect that may or may not have landed, and only a human/operator
+        can resolve it. Always logs; also fires the ``on_ambiguous`` hook if configured.
+        A misbehaving hook must not corrupt the ledger, so its exceptions are logged and
+        swallowed — the row is already durably AMBIGUOUS regardless."""
+        logger.warning("sakrit: effect %s is AMBIGUOUS (%s) — resolve it", key, reason)
+        if self._on_ambiguous is not None:
+            try:
+                self._on_ambiguous(key)
+            except Exception:  # noqa: BLE001 — never let alerting break the ledger
+                logger.exception("sakrit: on_ambiguous hook raised for %s", key)
 
     # --- multi-worker contention: leases, fencing, late evidence ----------
     #
@@ -499,6 +522,7 @@ class SqliteLedger:
                         "UPDATE effects SET state = ?, settled_at = ? WHERE key = ?",
                         (EffectState.AMBIGUOUS.value, _now(), key),
                     )
+                    self._tell_ambiguous(key, "L0 lease expired mid-dispatch (forbidden takeover)")
                     claim = Claim(ClaimKind.AMBIGUOUS)
                 else:
                     # Expired lease on a re-ownable row → take over, bump the fence.
@@ -555,7 +579,10 @@ class SqliteLedger:
             "WHERE key = ? AND fencing_token = ?",
             (state.value, encoded, marker, _now() if terminal else None, key, token),
         )
-        return cur.rowcount > 0
+        applied = cur.rowcount > 0
+        if applied and state is EffectState.AMBIGUOUS:
+            self._tell_ambiguous(key, "reconcile on takeover could not confirm the outcome")
+        return applied
 
     def heartbeat(
         self, key: str, owner: str, lease_seconds: float, now: float | None = None
