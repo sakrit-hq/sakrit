@@ -464,10 +464,25 @@ class SqliteLedger:
         # Execution truth outranks result fidelity: the effect happened. If the
         # result won't serialize, record SUCCEEDED with a marker (replay returns the
         # marker) — never raise here, which would leave a lie or a retriable state.
+        #
+        # P4-4: what's stored is ``json.dumps(result)``, so a *replay* returns
+        # ``json.loads`` of it — a lossy transform: a tuple comes back a list, int dict-keys
+        # come back strings, a dataclass/object falls to the ``Replayed`` marker. The
+        # exactly-once invariant is untouched (nothing re-fires), but "replay the recorded
+        # result" is really "replay a JSON reconstruction of it". Never silent: when the
+        # result won't round-trip cleanly, tell the operator (a full result-type declaration +
+        # rehydration is Act IV). See the ``guard`` return contract.
         encoded: str | None
         marker: str | None
         try:
             encoded, marker = json.dumps(result), None
+            if json.loads(encoded) != result:
+                logger.info(
+                    "sakrit: %s result (%s) will not JSON-round-trip — a replay returns a lossy "
+                    "reconstruction (e.g. tuple→list, int keys→str)",
+                    key,
+                    type(result).__name__,
+                )
         except (TypeError, ValueError):
             encoded, marker = None, f"unserializable:{type(result).__name__}"
         self.conn.execute(

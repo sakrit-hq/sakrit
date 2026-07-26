@@ -203,7 +203,14 @@ class Sakrit:
 
         A deliberate repeat of the same identity args at one call site replays (does not
         re-fire) unless wrapped in :meth:`step` — see the sequential-repeat trap on
-        :meth:`effect`."""
+        :meth:`effect`.
+
+        RETURN-VALUE CONTRACT (P4-4). On the *first* run you get the tool's real return value.
+        On a *replay* (resume, retry) you get ``json.loads(json.dumps(result))`` — a JSON
+        reconstruction: a tuple comes back a list, integer dict-keys come back strings, and a
+        non-JSON object comes back as a :class:`~sakrit.core.Replayed` marker. Exactly-once is
+        untouched (nothing re-fires); a lossy round-trip is logged. Return JSON-native values
+        (or handle the ``Replayed`` marker) if downstream code runs on the resume path."""
         _reject_async(fn)  # an async tool must use guard_async, not the sync record path
         rkey, rscope, fp, kw = self._prepare(decl, fn, args, kwargs, step, key, scope, occurrence)
         if self._leased:
