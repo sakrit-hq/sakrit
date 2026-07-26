@@ -1,0 +1,68 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sakrit"
+dynamic = ["version"]
+description = "Exactly-once effects for AI agents."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+authors = [
+    { name = "Sakrit" },
+]
+keywords = ["ai", "agents", "idempotency", "exactly-once", "durable-execution"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Libraries",
+    "Typing :: Typed",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/sakrit/sakrit"
+Documentation = "https://github.com/sakrit/sakrit#readme"
+Issues = "https://github.com/sakrit/sakrit/issues"
+Source = "https://github.com/sakrit/sakrit"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff>=0.6",
+    "mypy>=1.11",
+]
+
+[tool.hatch.version]
+path = "src/sakrit/__about__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sakrit"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+    "integration: touches real I/O (sqlite/postgres); slower",
+    "chaos: Act III kill-at-every-boundary suite",
+]
+
+[tool.ruff]
+src = ["src", "tests"]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+files = ["src", "tests"]
+python_version = "3.10"
+strict = true
