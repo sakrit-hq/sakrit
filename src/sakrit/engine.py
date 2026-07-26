@@ -233,7 +233,11 @@ class Sakrit:
         """Await an **async** ``fn`` exactly once for its logical step, or replay its
         result. Against a multi-worker ledger this drives the *async leased* protocol
         (settle_leased_async); against a single-worker ledger, the async settle path. The
-        effect is awaited before Sakrit records — no record-before-effect."""
+        effect is awaited before Sakrit records — no record-before-effect.
+
+        Multi-worker async caveat (V-9): the lease heartbeat runs on the event loop, so the
+        tool must yield to it at least every ``lease_seconds/3``; an await-less CPU-bound
+        stretch longer than the lease can let it expire and a peer take over mid-dispatch."""
         _reject_lazy(fn)  # V-1: an async-generator is not awaitable; its body never runs
         rkey, rscope, fp, kw = self._prepare(decl, fn, args, kwargs, step, key, scope, occurrence)
         if self._leased:

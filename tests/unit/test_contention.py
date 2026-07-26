@@ -823,3 +823,36 @@ def test_settle_leased_adopts_peer_result_when_terminal_fence_rejected() -> None
     out = settle_leased(led, key="k", scope="s", tool="t", fingerprint="fp", fn=fn)
     assert out == "peer-result"  # adopted the peer's recorded result
     assert led.state_of("k") is EffectState.SUCCEEDED
+
+
+def test_async_heartbeat_warns_when_the_effect_starves_the_loop(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # V-9: the async heartbeat shares the event loop with the effect. A long await-less
+    # stretch starves renewal; a renewal that then runs overdue must say so (it can't
+    # prevent a same-loop total starvation — that's the tool's contract — but it surfaces).
+    led = SqliteLedger(str(tmp_path / "l.db"), multi_worker=True)
+
+    async def partially_starving() -> str:
+        await asyncio.sleep(0)  # let the heartbeat task initialize (record its clock)
+        time.sleep(0.2)  # block the loop for 0.2s (>> lease 0.05) — starves renewal
+        await asyncio.sleep(0)  # yield again → the heartbeat runs and sees it's overdue
+        return "ok"
+
+    with caplog.at_level(logging.WARNING, logger="sakrit"):
+        out = asyncio.run(
+            settle_leased_async(
+                led,
+                key="k",
+                scope="s",
+                tool="t",
+                fingerprint="fp",
+                fn=partially_starving,
+                lease_seconds=0.05,
+                heartbeat_interval=0.02,
+            )
+        )
+    assert out == "ok"
+    assert "late" in caplog.text  # the starvation was surfaced
+    led.close()

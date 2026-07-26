@@ -213,20 +213,39 @@ def _start_heartbeat_async(
 ) -> tuple[asyncio.Event, asyncio.Task[None]] | None:
     """The async twin of :func:`_start_heartbeat` (P3-5). Renews the lease from an asyncio
     task on the event loop — no thread, so the SQLite connection is never touched from a
-    second OS thread. Returns ``(stop_event, task)`` or ``None`` (single-worker)."""
+    second OS thread. Returns ``(stop_event, task)`` or ``None`` (single-worker).
+
+    V-9 caveat: this task shares the event loop with the effect. An await-less stretch
+    longer than ``lease_seconds`` (a CPU-bound segment, a blocking sync call inside the
+    coroutine) starves renewal while the owner is alive → the lease can expire → a live
+    takeover. The tool MUST yield to the loop at least every ``lease_seconds/3``. A renewal
+    that observes it ran overdue logs a loud WARNING (the starvation happened)."""
     if not ledger.multi_worker:
         return None
     period = interval if interval is not None else max(lease_seconds / 3.0, 0.001)
     stop = asyncio.Event()
 
     async def _beat() -> None:
+        loop = asyncio.get_running_loop()
+        last = loop.time()
         while True:
             try:
                 await asyncio.wait_for(stop.wait(), timeout=period)
                 return  # stop set → done
             except asyncio.TimeoutError:
-                # V-8: never let the renewal die silently (that presumes a live owner
-                # dead). Log a raise / a False renewal and keep beating.
+                # V-9: if the loop starved us past the lease, the renewal is already too
+                # late — the lease may have expired and a peer taken over. Surface it.
+                gap = loop.time() - last
+                if gap > lease_seconds:
+                    logger.warning(
+                        "sakrit: async heartbeat for %s ran %.2fs late (> lease %.2fs) — the "
+                        "effect is not yielding to the loop; the lease may have expired",
+                        key,
+                        gap,
+                        lease_seconds,
+                    )
+                last = loop.time()
+                # V-8: never let the renewal die silently. Log a raise / a False renewal.
                 try:
                     if not ledger.heartbeat(key, ledger.owner, lease_seconds):
                         logger.warning("sakrit: heartbeat for %s did not renew (lease lost?)", key)
