@@ -15,30 +15,51 @@ in parallel.
 
 ## Quickstart
 
-> **Not yet available.** The API below is the target experience (Act II: "write
-> the README before the code"). It is here so the shape is visible and can be
-> argued with — it does not run yet.
+Wrap the tool that touches the world. Declare which arguments are *identity* (a
+different value means a different action) and which are *content* (the model may
+reword them on a retry). That's it.
 
 ```python
-from sakrit import effect
+from sakrit import Sakrit, SqliteLedger, EffectDecl
+from sakrit.core import ArgClass
+from sakrit.adapters.langgraph import LangGraphAdapter
+
+sk = Sakrit(
+    SqliteLedger("sakrit.db"),
+    secret=b"<per-deployment secret>",
+    adapter=LangGraphAdapter(),
+)
 
 
-# Wrap the tool that touches the world. That's it.
-@effect
-def send_email(to: str, subject: str, body: str) -> None:
-    smtp.send(to, subject, body)
+@sk.effect(
+    EffectDecl(
+        "email.send",
+        {
+            "to": ArgClass.IDENTITY,  # a different recipient is a different email
+            "subject": ArgClass.IDENTITY,
+            "body": ArgClass.CONTENT,  # a reworded body is the *same* email
+        },
+    )
+)
+def send_email(to: str, subject: str, body: str) -> str:
+    return smtp.send(to, subject, body)
 
 
-# Crash, resume, retry, or run two plans in parallel:
-# send_email fires exactly once. Re-runs return the saved result.
+# Crash, resume, or retry: send_email fires exactly once.
+# A re-run returns the saved result instead of sending again.
 ```
 
 ## Status
 
-Pre-alpha. This repository currently holds project plumbing and structure only;
-the narrow core lands in **Act II** of the roadmap (kept privately, outside this
-repository). See [`CONTRIBUTING.md`](CONTRIBUTING.md) to get involved (a signed
-CLA comes first).
+**Pre-alpha — the Act II core works.** Exactly-once for single-worker agents on
+LangGraph: positional identity, the coordinate ladder, a fingerprint over identity
+args, a write-ahead SQLite ledger, replay, and a startup recovery scan. Verified
+end-to-end (the guarded double-email sends once across a real interrupt/resume).
+
+Not yet: multi-worker (leases/fencing, Postgres), the provider-cooperation ladder
+beyond L0/replay, the effect outbox / approval gating, and plan-epoch handling —
+these are Act III. See [`CONTRIBUTING.md`](CONTRIBUTING.md) to get involved (a
+signed CLA comes first).
 
 ## Development
 
