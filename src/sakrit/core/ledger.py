@@ -37,7 +37,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 
-from sakrit.core.errors import EffectInFlightError, SakritError
+from sakrit.core.errors import DivergentRetry, EffectInFlightError, SakritError
 from sakrit.core.seams import seam
 
 logger = logging.getLogger("sakrit")
@@ -351,6 +351,12 @@ class SqliteLedger:
         row = self.conn.execute("SELECT state FROM effects WHERE key = ?", (key,)).fetchone()
         return None if row is None else EffectState(row[0])
 
+    def fingerprint_of(self, key: str) -> str | None:
+        """The identity fingerprint stored on ``key`` (``None`` if absent) — for the adopt
+        path's divergence check (V-10)."""
+        row = self.conn.execute("SELECT fingerprint FROM effects WHERE key = ?", (key,)).fetchone()
+        return None if row is None else row[0]
+
     def recorded_result(self, key: str) -> object:
         """The result stored on ``key`` — the same decoding as a REPLAY (a ``Replayed``
         marker for an unserializable result, else the decoded value). Raises if absent."""
@@ -660,6 +666,18 @@ class SqliteLedger:
                     claim = Claim(ClaimKind.AMBIGUOUS)
                 elif lease_expires is not None and lease_expires > now and lease_owner != owner:
                     claim = Claim(ClaimKind.BUSY)  # a live owner holds it
+                elif row[2] != fingerprint:
+                    # V-10: divergence detection on the takeover path. Every takeover below
+                    # transfers the lease and may re-run the action; a taker presenting a
+                    # *different* fingerprint is a different logical action for the same key,
+                    # and the key names one action (positional identity). Refuse loudly BEFORE
+                    # any lease transfer — never run B's action under A's identity, never let B
+                    # "resolve" A's row. (REPLAY checks fp caller-side; this is the in-flight
+                    # gate the takeover path was missing.)
+                    raise DivergentRetry(
+                        f"{key}: identity args differ from the in-flight action; the key names "
+                        "one action, not one tool — refusing takeover by a divergent caller"
+                    )
                 elif state is EffectState.EXECUTING and not (provider_dedup or reconcilable):
                     # L0 expired-lease takeover is forbidden — no safe retry exists.
                     # P3-6b: bump the fence so the presumed-dead owner's stale-token write

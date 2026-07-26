@@ -89,6 +89,8 @@ class LeasedLedger(Ledger, Protocol):
 
     def recorded_result(self, key: str) -> object: ...
 
+    def fingerprint_of(self, key: str) -> str | None: ...
+
     def claim_leased(
         self,
         key: str,

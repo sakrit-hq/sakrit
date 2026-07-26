@@ -16,8 +16,8 @@ from pathlib import Path
 import pytest
 
 from sakrit.core import EffectState, SqliteLedger
-from sakrit.core.errors import AmbiguousOutcome
-from sakrit.core.leased import settle_leased, settle_leased_async
+from sakrit.core.errors import AmbiguousOutcome, DivergentRetry
+from sakrit.core.leased import _record_success_fenced, settle_leased, settle_leased_async
 from sakrit.core.ledger import ClaimKind, Replayed
 from sakrit.core.reconcile import Reconciliation
 
@@ -886,3 +886,82 @@ def test_unexpected_claim_kind_is_refused_not_executed() -> None:
     led = BusyLedger()
     with pytest.raises(SakritError, match="unexpected claim kind"):
         settle(led, key="k", scope="s", tool="t", fingerprint="fp", fn=lambda: 1)
+
+
+def test_v10_divergent_taker_refused_at_takeover() -> None:
+    # V-10: a taker presenting a *different* fingerprint for an in-flight key is a different
+    # action — the takeover path must refuse (DivergentRetry) before any lease transfer.
+    led = _led()
+    led.claim_leased(
+        "k", "s", "t", "fp-A", owner="A", now=1.0, lease_seconds=LEASE, reconcilable=True
+    )
+    led.fence("k", 1, EffectState.EXECUTING)
+    before = led.conn.execute(
+        "SELECT fencing_token, fingerprint FROM effects WHERE key='k'"
+    ).fetchone()
+    with pytest.raises(DivergentRetry):
+        led.claim_leased(
+            "k", "s", "t", "fp-B", owner="B", now=200.0, lease_seconds=LEASE, reconcilable=True
+        )
+    # The refusal happened before any mutation: state, token, and fingerprint are untouched.
+    assert led.state_of("k") is EffectState.EXECUTING
+    after = led.conn.execute(
+        "SELECT fencing_token, fingerprint FROM effects WHERE key='k'"
+    ).fetchone()
+    assert after == before and after[1] == "fp-A"
+
+
+def test_v10_divergent_taker_of_l2_within_ttl_refused() -> None:
+    led = _led()
+    led.claim_leased(
+        "k",
+        "s",
+        "t",
+        "fp-A",
+        owner="A",
+        now=1.0,
+        lease_seconds=LEASE,
+        provider_dedup=True,
+        provider_ttl_s=3600,
+    )
+    led.fence("k", 1, EffectState.EXECUTING)
+    with pytest.raises(DivergentRetry):
+        led.claim_leased(
+            "k",
+            "s",
+            "t",
+            "fp-B",
+            owner="B",
+            now=200.0,
+            lease_seconds=LEASE,
+            provider_dedup=True,
+            provider_ttl_s=3600,
+        )
+
+
+def test_v10_matching_fp_taker_still_takes_over() -> None:
+    # Regression: a matching-fingerprint taker is NOT refused — only divergence is.
+    led = _led()
+    led.claim_leased(
+        "k", "s", "t", "fp", owner="A", now=1.0, lease_seconds=LEASE, reconcilable=True
+    )
+    led.fence("k", 1, EffectState.EXECUTING)
+    c = led.claim_leased(
+        "k", "s", "t", "fp", owner="B", now=200.0, lease_seconds=LEASE, reconcilable=True
+    )
+    assert c.kind is ClaimKind.RECONCILE
+
+
+def test_v10_adopt_path_refuses_a_divergent_recorded_result() -> None:
+    # V-10 (adopt): _record_success_fenced must not adopt a peer's SUCCEEDED result that was
+    # recorded under a *different* fingerprint.
+    led = _led()
+    a = led.claim_leased("k", "s", "t", "fp-A", owner="A", now=100.0, lease_seconds=LEASE)
+    led.fence("k", a.fencing_token, EffectState.EXECUTING)
+    led.conn.execute(
+        "UPDATE effects SET state=?, result=?, fingerprint=?, fencing_token=fencing_token+1 "
+        "WHERE key=?",
+        (EffectState.SUCCEEDED.value, '"peer"', "fp-B", "k"),
+    )
+    with pytest.raises(DivergentRetry):
+        _record_success_fenced(led, "k", a.fencing_token, "ours", "fp-A")
