@@ -49,8 +49,14 @@ def run() -> None:
     from sakrit import EffectDecl, Sakrit, SqliteLedger, current_key
     from sakrit.core import ArgClass, Reconciliation
 
-    ledger = SqliteLedger(os.environ["CHAOS_DB"])
-    sk = Sakrit(ledger, secret=b"chaos-secret")
+    # CHAOS_LEASED=1 drives the multi-worker leased protocol: a short lease so a peer can
+    # take over after a killed lease-holder, and settle_leased under a real os._exit kill.
+    if os.environ.get("CHAOS_LEASED") == "1":
+        ledger = SqliteLedger(os.environ["CHAOS_DB"], multi_worker=True)
+        sk = Sakrit(ledger, secret=b"chaos-secret", lease_seconds=1.0, wait_timeout=1.0)
+    else:
+        ledger = SqliteLedger(os.environ["CHAOS_DB"])
+        sk = Sakrit(ledger, secret=b"chaos-secret")
 
     # L1 (reconcilable): a non-deduplicating provider we can *query* on recovery. The
     # reconcile reads the durable world by the effect's key — "did this land?".

@@ -12,6 +12,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -24,16 +25,20 @@ _WORKER = Path(__file__).parent / "worker.py"
 _KILL_CODE = 137  # os._exit(137) at the seam — models 128 + SIGKILL(9)
 
 
-def _run(tmp: Path, scenario: str, crash_at: str | None) -> int:
+def _run(tmp: Path, scenario: str, crash_at: str | None, *, leased: bool = False) -> int:
     """Run one worker process. Returns its exit code so the caller can assert the kill
     actually fired (P2-1): a seam run must exit _KILL_CODE, a clean run must exit 0 —
-    otherwise the boundary was never reached and the "kill" was vacuous."""
+    otherwise the boundary was never reached and the "kill" was vacuous. ``leased`` drives
+    the multi-worker leased protocol (short lease, settle_leased)."""
     env = dict(os.environ)
     env["CHAOS_SCENARIO"] = scenario
     env["CHAOS_DB"] = str(tmp / "ledger.sqlite")
     env["CHAOS_WORLD"] = str(tmp / "world.jsonl")
     env.pop("SAKRIT_TESTING", None)
     env.pop("SAKRIT_CRASH_AT", None)
+    env.pop("CHAOS_LEASED", None)
+    if leased:
+        env["CHAOS_LEASED"] = "1"
     if crash_at is not None:
         env["SAKRIT_TESTING"] = "1"
         env["SAKRIT_CRASH_AT"] = crash_at
@@ -149,15 +154,15 @@ def test_unguarded_control_duplicates(tmp_path: Path) -> None:
     assert _world_count(tmp_path) == 2
 
 
-@pytest.mark.skip(
-    reason="P2-4: leased multi-worker *chaos* (kill a lease-holder mid-dispatch under a "
-    "short lease, a peer takes over) still needs a concurrent-kill harness with real "
-    "lease-expiry timing across subprocesses. The engine-wiring blocker (P3-8) is DONE — "
-    "leased exactly-once is now proven through the public surface under real thread "
-    "concurrency in tests/unit/test_engine_leased.py, and takeover-by-ladder "
-    "deterministically in tests/unit/test_contention.py."
-)
-def test_leased_takeover_chaos_placeholder() -> None:  # pragma: no cover
-    # Intentionally unimplemented; skipped-with-reason so the gap is visible in the run,
-    # not silently absent. The remaining work is the timing harness, not the wiring.
-    raise AssertionError("unreachable")
+def test_leased_l1_takeover_survives_a_real_kill(tmp_path: Path) -> None:
+    # P2-4 / V-4: the leased path, killed for real. Worker A (L1, multi-worker, 1s lease)
+    # delivers to the world, then a hard os._exit kills it mid-dispatch — its row is left
+    # EXECUTING under a now-orphaned lease. After the lease expires, worker B takes over by
+    # ladder: RECONCILE finds A's delivery → adopts it. Exactly-once holds across a real
+    # kill + a real lease-expiry takeover — the P1-2 Critical, finally killed.
+    assert _run(tmp_path, "L1", "after_world_write", leased=True) == _KILL_CODE  # deliver, die
+    time.sleep(2.1)  # let A's 1-second lease expire (DB clock is whole seconds)
+    assert _run(tmp_path, "L1", None, leased=True) == 0  # B takes over, reconciles, adopts
+
+    assert _world_count(tmp_path) == 1, f"world deliveries: {_world_count(tmp_path)}"
+    assert "SUCCEEDED" in _ledger_states(tmp_path), f"ledger states: {_ledger_states(tmp_path)}"
