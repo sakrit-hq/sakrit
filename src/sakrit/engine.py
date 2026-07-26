@@ -85,12 +85,26 @@ def _bind(
 ) -> dict[str, object]:
     """Bind call arguments to their parameter names, for fingerprinting.
 
-    Falls back to the kwargs alone for uninspectable callables (e.g. some builtins).
+    ``apply_defaults`` folds a parameter's default into the named map, so a default that is
+    an *identity* arg participates in the fingerprint — changing that default across a deploy
+    re-keys in-flight steps (a loud ``DivergentRetry`` on resume, not a silent swallow).
     """
     try:
         sig = inspect.signature(fn)
         bound = sig.bind_partial(*args, **kwargs)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError) as exc:
+        # P4-5: the signature is unavailable (a C-extension method, some builtins). We can't
+        # map *positional* args to names, so they would silently vanish from the fingerprint
+        # → two different actions share one fingerprint → the second replays the first
+        # silently (the fingerprint's whole job, disabled). Refuse fail-closed. Kwargs-only
+        # is safe — those args are already named.
+        if args:
+            raise SakritError(
+                f"{getattr(fn, '__name__', fn)!r}: cannot inspect its signature to bind "
+                f"{len(args)} positional argument(s) for fingerprinting — dropping them would "
+                "silently replay a *different* action. Pass identity args by keyword, or wrap "
+                "the tool in an inspectable function."
+            ) from exc
         return dict(kwargs)
     bound.apply_defaults()
     return dict(bound.arguments)
