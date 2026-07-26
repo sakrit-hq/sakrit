@@ -11,10 +11,11 @@ this with the adapter and the SED declaration; it lands with the LangGraph adapt
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Callable, Mapping
 
 from sakrit.core.context import _current_key
-from sakrit.core.errors import AmbiguousOutcome, DivergentRetry
+from sakrit.core.errors import AmbiguousOutcome, DivergentRetry, SakritError
 from sakrit.core.ledger import ClaimKind, SqliteLedger
 from sakrit.core.seams import seam
 
@@ -69,6 +70,14 @@ def settle(
     token = _current_key.set(key)  # the tool may read this via sakrit.current_key()
     try:
         result = fn(*args, **dict(kwargs or {}))
+        # Belt-and-braces (P1-1): a wrapper that dodged the decoration-time check may
+        # still hand back a coroutine. It was never awaited → no effect ran → refuse
+        # BEFORE recording, so we never record SUCCEEDED before the effect.
+        if inspect.isawaitable(result):
+            raise SakritError(
+                f"{tool}: the guarded callable returned an awaitable; it was not run. "
+                "Sakrit cannot guard async tools synchronously (record-before-effect)."
+            )
         seam("after_dispatch")
     except BaseException as exc:
         # A *declared* clean failure proves the effect did not execute → FAILED

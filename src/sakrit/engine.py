@@ -18,6 +18,7 @@ from typing import Any, TypeVar
 
 from sakrit.core.adapter import RuntimeAdapter, resolve_coordinate
 from sakrit.core.declaration import EffectDecl
+from sakrit.core.errors import SakritError
 from sakrit.core.fingerprint import fingerprint
 from sakrit.core.keys import positional_key
 from sakrit.core.ledger import SqliteLedger
@@ -25,6 +26,19 @@ from sakrit.core.reconcile import Verdict
 from sakrit.core.settle import settle
 
 F = TypeVar("F", bound=Callable[..., Any])
+
+
+def _reject_async(fn: Callable[..., object]) -> None:
+    """Refuse to guard an async tool: calling it synchronously would return an
+    unawaited coroutine, and Sakrit would record SUCCEEDED before the effect ran
+    (record-before-effect → a silently-lost effect on replay). Fail closed until a
+    real async settle path (guard_async) lands. See audit P1-1."""
+    if inspect.iscoroutinefunction(fn) or inspect.isasyncgenfunction(fn):
+        raise SakritError(
+            f"{getattr(fn, '__name__', fn)!r} is async; guarding it synchronously would "
+            "record success before the effect runs. Async tool support (guard_async) is "
+            "coming — do not guard an async def with sk.effect/guard yet."
+        )
 
 
 def _bind(
@@ -72,6 +86,7 @@ class Sakrit:
         occurrence: int = 1,
     ) -> object:
         """Run ``fn`` exactly once for its logical step, or replay its saved result."""
+        _reject_async(fn)
         self._registry.setdefault(decl.tool, decl)
         # Q14 — the engine guarantees recovery runs once per process, before the
         # first claim it issues. The Q1 fix removed claim's lazy safety net, so a
@@ -129,6 +144,8 @@ class Sakrit:
         self._registry.setdefault(decl.tool, decl)  # available to recovery before first call
 
         def deco(fn: F) -> F:
+            _reject_async(fn)  # fail at decoration (import) time, not at 2am
+
             @functools.wraps(fn)
             def wrapper(*args: Any, **kwargs: Any) -> Any:
                 return self.guard(
