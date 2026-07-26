@@ -155,9 +155,14 @@ class SqliteLedger:
         self._path = str(path)
         self._lock_fd: int | None = None
         self._multi_worker = multi_worker
-        # P3-10(e): a UUID owner id — `pid`+`id(self)` can repeat across container restarts
-        # (pid reuse) and object churn (id reuse after GC), colliding two distinct workers.
-        self.owner = owner or f"worker-{uuid.uuid4().hex}"
+        # P3-10(e) / V-6b: the owner id must be globally unique — a *collision* is a silent
+        # duplicate (two workers sharing an id both pass the `lease_owner != owner` BUSY test
+        # → both PROCEED on one live row). `owner=` is therefore a **label, not an identity**:
+        # we always suffix a uuid, so ops keep a readable prefix (`pod-3-a1b2c3d4`) and
+        # uniqueness is unconditional — even against a copied config, a pod name, or a
+        # `gethostname()`. Heartbeat / BUSY compare the stored value, so the suffix is
+        # transparent to the protocol.
+        self.owner = f"{owner}-{uuid.uuid4().hex[:8]}" if owner else f"worker-{uuid.uuid4().hex}"
         # V-3: a multi_worker ledger is one connection == one worker. It runs with
         # check_same_thread=False (leases coordinate instead), so SQLite won't catch a
         # connection shared across worker threads — which defeats BEGIN IMMEDIATE's

@@ -178,3 +178,32 @@ def test_durability_pragmas_are_verified_not_just_set(tmp_path: Path) -> None:
         assert led.fault_model() == "process-and-power-crash-safe (WAL+FULL)"
     finally:
         led.close()
+
+
+# --- V-6b: owner= is a label, not an identity (uuid-suffixed) --------------
+def test_duplicate_owner_label_gets_distinct_ids(tmp_path: Path) -> None:
+    db = tmp_path / "l.sqlite"
+    a = SqliteLedger(db, multi_worker=True, owner="pod-3")
+    b = SqliteLedger(db, multi_worker=True, owner="pod-3")
+    try:
+        assert a.owner != b.owner  # uniqueness is unconditional — no silent collision
+        assert a.owner.startswith("pod-3-") and b.owner.startswith("pod-3-")  # label preserved
+    finally:
+        a.close()
+        b.close()
+
+
+def test_same_owner_label_two_workers_do_not_both_proceed(tmp_path: Path) -> None:
+    from sakrit.core.ledger import ClaimKind
+
+    db = tmp_path / "l.sqlite"
+    a = SqliteLedger(db, multi_worker=True, owner="pod")
+    b = SqliteLedger(db, multi_worker=True, owner="pod")
+    try:
+        ca = a.claim_leased("k", "s", "t", "fp", owner=a.owner, lease_seconds=30.0, now=100.0)
+        cb = b.claim_leased("k", "s", "t", "fp", owner=b.owner, lease_seconds=30.0, now=110.0)
+        assert ca.kind is ClaimKind.PROCEED
+        assert cb.kind is ClaimKind.BUSY  # the live lease is respected — no collision-PROCEED
+    finally:
+        a.close()
+        b.close()
