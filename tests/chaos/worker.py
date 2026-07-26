@@ -47,12 +47,24 @@ def run() -> None:
         return
 
     from sakrit import EffectDecl, Sakrit, SqliteLedger, current_key
-    from sakrit.core import ArgClass
+    from sakrit.core import ArgClass, Reconciliation
 
     ledger = SqliteLedger(os.environ["CHAOS_DB"])
     sk = Sakrit(ledger, secret=b"chaos-secret")
-    provider_param = "idempotency_key" if SCENARIO == "L2" else None
-    decl = EffectDecl("chaos.send", {"to": ArgClass.IDENTITY}, provider_key_param=provider_param)
+
+    # L1 (reconcilable): a non-deduplicating provider we can *query* on recovery. The
+    # reconcile reads the durable world by the effect's key — "did this land?".
+    def reconcile(key: str) -> Reconciliation:
+        if _already_delivered(key):
+            return Reconciliation.settled({"reconciled": True})
+        return Reconciliation.absent()
+
+    decl = EffectDecl(
+        "chaos.send",
+        {"to": ArgClass.IDENTITY},
+        provider_key_param="idempotency_key" if SCENARIO == "L2" else None,
+        reconcile=reconcile if SCENARIO == "L1" else None,
+    )
 
     @sk.effect(decl, key="the-effect")
     def do_effect(to: str) -> dict[str, object]:
@@ -61,6 +73,10 @@ def run() -> None:
             if _already_delivered(idem):  # the keyed provider deduplicates a retry
                 return {"deduped": True}
             _deliver({"to": to, "idem": idem})
+            return {"ok": True}
+        if SCENARIO == "L1":
+            # No self-dedup (the provider doesn't); recovery reconciles by key instead.
+            _deliver({"to": to, "idem": current_key()})
             return {"ok": True}
         _deliver({"to": to})
         return {"ok": True}

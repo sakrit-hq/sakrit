@@ -78,6 +78,41 @@ _CELLS = [
         1,
         "AMBIGUOUS",
     ),
+    # P2-2: the post-intent boundary — killed *after* the durable EXECUTING mark but
+    # *before* dispatch (nothing delivered). L0 can't prove it didn't fire → AMBIGUOUS,
+    # world stays 0 (at-most-once). L2 re-dispatches safely (provider dedups) → 1 send.
+    (
+        "L0 x after_mark_executing -> AMBIGUOUS",
+        "L0",
+        ["after_mark_executing", None],
+        0,
+        "AMBIGUOUS",
+    ),
+    (
+        "L2 x after_mark_executing -> re-dispatch",
+        "L2",
+        ["after_mark_executing", None],
+        1,
+        "SUCCEEDED",
+    ),
+    # P2-3: L1 (reconcilable, non-deduplicating). The ambiguous window that L0 must
+    # surface, L1 *resolves*: reconcile reads the world by key and adopts the delivery.
+    (
+        "L1 x after_world_write -> reconcile settles",
+        "L1",
+        ["after_world_write", None],
+        1,
+        "SUCCEEDED",
+    ),
+    # L1 killed before the world write: reconcile truthfully says ABSENT; on_absent
+    # defaults to surface (an eventual read may lie), so it surfaces rather than re-fire.
+    (
+        "L1 x after_mark_executing -> reconcile absent -> AMBIGUOUS",
+        "L1",
+        ["after_mark_executing", None],
+        0,
+        "AMBIGUOUS",
+    ),
 ]
 
 
@@ -112,3 +147,15 @@ def test_unguarded_control_duplicates(tmp_path: Path) -> None:
     assert _run(tmp_path, "control", "after_world_write") == _KILL_CODE  # deliver, then die
     assert _run(tmp_path, "control", None) == 0  # restart -> deliver again
     assert _world_count(tmp_path) == 2
+
+
+@pytest.mark.skip(
+    reason="P2-4: leased multi-worker chaos (kill a lease-holder mid-dispatch, a peer "
+    "takes over) needs the engine-wired leased loop (P3-8). The worker drives the "
+    "single-worker settle path; there is no public surface to chaos-test settle_leased "
+    "yet. The leased protocol is covered deterministically in tests/unit/test_contention.py."
+)
+def test_leased_takeover_chaos_placeholder() -> None:  # pragma: no cover
+    # Intentionally unimplemented; skipped-with-reason so the gap is visible in the run,
+    # not silently absent. Lands with P3-8 (settle_leased engine integration).
+    raise AssertionError("unreachable")
