@@ -19,6 +19,7 @@ from collections.abc import Callable, Mapping
 from sakrit.core.context import _current_key
 from sakrit.core.errors import AmbiguousOutcome, DivergentRetry
 from sakrit.core.ledger import ClaimKind, EffectState, SqliteLedger
+from sakrit.core.reconcile import Reconciliation, Verdict
 from sakrit.core.seams import seam
 
 
@@ -35,12 +36,20 @@ def settle_leased(
     provider_key_param: str | None = None,
     clean_failures: tuple[type[BaseException], ...] = (),
     reconcilable: bool = False,
+    reconcile: Callable[[str], Reconciliation] | None = None,
+    on_absent: str = "surface",
     lease_seconds: float = 30.0,
     wait_timeout: float = 30.0,
     poll: float = 0.01,
 ) -> object:
     """Run ``fn`` exactly once for ``key`` across concurrent workers, or return the
-    winner's recorded result."""
+    winner's recorded result.
+
+    ``reconcile`` (with ``reconcilable=True``) makes takeover honest for L1/L2R tools:
+    when this worker takes over a row a presumed-dead owner left *in flight*, it asks
+    the provider "did it happen?" before acting — adopting the record on ``SETTLED``,
+    re-dispatching only on ``ABSENT`` + ``on_absent="retry"``, else surfacing. Without
+    it, a reconcilable takeover cannot prove the effect didn't land, so it surfaces."""
     deadline = time.time() + wait_timeout
     while True:
         claim = ledger.claim_leased(
@@ -68,8 +77,26 @@ def settle_leased(
             time.sleep(poll)
             continue
 
-        # PROCEED — we hold the lease and a fencing token.
+        # PROCEED / RECONCILE — we hold the lease and a fencing token.
         token = claim.fencing_token
+
+        if claim.kind is ClaimKind.RECONCILE:
+            # P1-2: we took over a reconcilable row that was mid-flight. Ask the provider
+            # what actually happened before touching the effect. Read-only ⇒ crash-safe.
+            rec = reconcile(key) if reconcile is not None else Reconciliation.unknown()
+            if rec.verdict is Verdict.SETTLED:
+                ledger.fence(key, token, EffectState.SUCCEEDED, result=rec.result)
+                return rec.result
+            if not (rec.verdict is Verdict.ABSENT and on_absent == "retry"):
+                # ABSENT+surface (a lagging read may lie) or UNKNOWN → never re-fire.
+                ledger.fence(key, token, EffectState.AMBIGUOUS)
+                raise AmbiguousOutcome(
+                    f"{key}: took over a reconcilable in-flight row; provider verdict is "
+                    f"{rec.verdict.value} — outcome unknown, resolve it"
+                )
+            # ABSENT + retry: the effect provably did not land → safe to re-dispatch
+            # with the token we already hold. Fall through to the write-ahead + dispatch.
+
         if not ledger.fence(key, token, EffectState.EXECUTING):  # write-ahead, fenced
             # P1-3: the fence no-op'd — our token is stale, so a peer took the lease over
             # between claim and here (the exact stop-the-world window fencing exists for).

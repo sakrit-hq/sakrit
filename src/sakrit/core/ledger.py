@@ -56,6 +56,8 @@ class ClaimKind(Enum):
     REPLAY = "replay"  # already SUCCEEDED — return the saved result (check fp)
     AMBIGUOUS = "ambiguous"  # crashed in the window — must surface, do not execute
     BUSY = "busy"  # a live lease holds it (multi-worker) — wait for the owner's result
+    RECONCILE = "reconcile"  # took over a reconcilable in-flight row — ask "did it happen?"
+    # (multi-worker L1/L2R takeover) before deciding to adopt, re-dispatch, or surface
 
 
 @dataclass(frozen=True)
@@ -473,7 +475,17 @@ class SqliteLedger:
                             key,
                         ),
                     )
-                    claim = Claim(ClaimKind.PROCEED, fencing_token=new_token)
+                    # P1-2: a reconcilable row that was already EXECUTING means the
+                    # presumed-dead owner may have *completed* the effect at a provider
+                    # that does not dedup (L1/L2R). Re-dispatching blind would duplicate.
+                    # Signal RECONCILE — the caller asks "did it happen?" before acting.
+                    # A CLAIMED leftover (crash before dispatch) never ran → plain PROCEED.
+                    kind = (
+                        ClaimKind.RECONCILE
+                        if state is EffectState.EXECUTING and reconcilable
+                        else ClaimKind.PROCEED
+                    )
+                    claim = Claim(kind, fencing_token=new_token)
             self.conn.execute("COMMIT")
             return claim
         except BaseException:

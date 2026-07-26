@@ -8,12 +8,24 @@ the remaining Act III-M work.
 
 import json
 
+import pytest
+
 from sakrit.core import EffectState, SqliteLedger
 from sakrit.core.errors import AmbiguousOutcome
 from sakrit.core.leased import settle_leased
 from sakrit.core.ledger import ClaimKind, Replayed
+from sakrit.core.reconcile import Reconciliation
 
 LEASE = 30.0
+
+
+def _stale_l1_row(led: SqliteLedger) -> None:
+    """An L1 (reconcilable, non-deduplicating) row left EXECUTING by a dead owner
+    whose lease has long expired against the real clock."""
+    led.claim_leased(
+        "k", "s", "t", "fp", owner="A", now=1.0, lease_seconds=LEASE, reconcilable=True
+    )
+    led.fence("k", 1, EffectState.EXECUTING)
 
 
 def _led() -> SqliteLedger:
@@ -173,3 +185,113 @@ def test_settle_leased_times_out_if_lease_lost_and_never_resolves() -> None:
         raise AssertionError("expected AmbiguousOutcome")
     except AmbiguousOutcome:
         pass
+
+
+def test_settle_leased_reconciles_settled_takeover_no_redispatch() -> None:
+    # P1-2: taking over a mid-flight L1 row must ask "did it happen?" — SETTLED adopts
+    # the provider's record and never re-fires the effect.
+    led = _led()
+    _stale_l1_row(led)
+    calls: list[int] = []
+
+    def fn() -> str:
+        calls.append(1)
+        return "re-sent"
+
+    out = settle_leased(
+        led,
+        key="k",
+        scope="s",
+        tool="t",
+        fingerprint="fp",
+        fn=fn,
+        reconcilable=True,
+        reconcile=lambda k: Reconciliation.settled("provider-record"),
+    )
+    assert out == "provider-record"  # adopted the provider's record
+    assert calls == []  # the effect already happened → never re-dispatched
+    assert led.state_of("k") is EffectState.SUCCEEDED
+
+
+def test_settle_leased_reconciles_absent_retry_redispatches_once() -> None:
+    # ABSENT + on_absent="retry": the effect provably did not land → re-dispatch exactly once.
+    led = _led()
+    _stale_l1_row(led)
+    calls: list[int] = []
+
+    def fn() -> str:
+        calls.append(1)
+        return "sent-now"
+
+    out = settle_leased(
+        led,
+        key="k",
+        scope="s",
+        tool="t",
+        fingerprint="fp",
+        fn=fn,
+        reconcilable=True,
+        reconcile=lambda k: Reconciliation.absent(),
+        on_absent="retry",
+    )
+    assert out == "sent-now"
+    assert calls == [1]
+    assert led.state_of("k") is EffectState.SUCCEEDED
+
+
+def test_settle_leased_reconciles_absent_surface_never_refires() -> None:
+    # ABSENT + surface (the default — a lagging read may lie): surface, never re-fire.
+    led = _led()
+    _stale_l1_row(led)
+    calls: list[int] = []
+
+    with pytest.raises(AmbiguousOutcome):
+        settle_leased(
+            led,
+            key="k",
+            scope="s",
+            tool="t",
+            fingerprint="fp",
+            fn=lambda: calls.append(1),
+            reconcilable=True,
+            reconcile=lambda k: Reconciliation.absent(),
+        )
+    assert calls == []
+    assert led.state_of("k") is EffectState.AMBIGUOUS
+
+
+def test_settle_leased_reconcile_unknown_surfaces() -> None:
+    led = _led()
+    _stale_l1_row(led)
+    with pytest.raises(AmbiguousOutcome):
+        settle_leased(
+            led,
+            key="k",
+            scope="s",
+            tool="t",
+            fingerprint="fp",
+            fn=lambda: 1,
+            reconcilable=True,
+            reconcile=lambda k: Reconciliation.unknown(),
+        )
+    assert led.state_of("k") is EffectState.AMBIGUOUS
+
+
+def test_settle_leased_reconcilable_takeover_without_reconcile_fn_surfaces() -> None:
+    # No reconcile function ⇒ we cannot prove the effect didn't land → surface, never
+    # blind re-dispatch (the P1-2 failure mode).
+    led = _led()
+    _stale_l1_row(led)
+    calls: list[int] = []
+    with pytest.raises(AmbiguousOutcome):
+        settle_leased(
+            led,
+            key="k",
+            scope="s",
+            tool="t",
+            fingerprint="fp",
+            fn=lambda: calls.append(1),
+            reconcilable=True,
+        )
+    assert calls == []
+    assert led.state_of("k") is EffectState.AMBIGUOUS
