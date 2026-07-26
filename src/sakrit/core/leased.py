@@ -48,13 +48,14 @@ def _record_success_fenced(
     if ledger.fence(key, token, EffectState.SUCCEEDED, result=result):
         return result
     state = ledger.state_of(key)
-    if state is EffectState.AMBIGUOUS:
+    if state is EffectState.AMBIGUOUS or state is EffectState.FAILED:
+        # Our success outranks a spurious AMBIGUOUS (a forbidden takeover) *and* a peer's
+        # clean-FAILED claim (V-11): the effect *happened* — we ran it. Heal via late evidence.
         if ledger.accept_late_evidence(key, result):
-            logger.warning("sakrit: %s was ambiguated mid-flight; healed by late evidence", key)
+            logger.warning("sakrit: %s healed by late evidence (was %s)", key, state.value)
             return result
-        # Hygiene: the accept no-op'd → between our read and write a *competing* accept
-        # settled it (AMBIGUOUS's only legal successor is SUCCEEDED). Adopt the recorded
-        # truth rather than blindly returning ours.
+        # The accept no-op'd → a competing success settled it first (SUCCEEDED is the only
+        # legal successor of our heal). Adopt the recorded truth rather than returning ours.
         logger.info("sakrit: %s late-evidence lost the race; adopting the recorded result", key)
         return ledger.recorded_result(key)
     if state is EffectState.SUCCEEDED:
@@ -70,6 +71,25 @@ def _record_success_fenced(
     raise AmbiguousOutcome(
         f"{key}: our result was rejected and the row is {state.value if state else None} — "
         "lost the lease mid-flight and cannot safely record; resolve it"
+    )
+
+
+def _record_failure_fenced(ledger: LeasedLedger, key: str, token: int) -> None:
+    """Record a declared clean failure (the effect did NOT run → FAILED, re-claimable). If the
+    fence is rejected because we lost the lease mid-dispatch, self-heal like the success path
+    (V-11 / item 6): if a forbidden takeover ambiguated our row, contribute the clean failure as
+    late evidence (AMBIGUOUS→FAILED) so a clean-failed zombie *frees* the row instead of
+    stranding it AMBIGUOUS forever. If a peer already SUCCEEDED, success wins — leave it."""
+    if ledger.fence(key, token, EffectState.FAILED):
+        return
+    state = ledger.state_of(key)
+    if state is EffectState.AMBIGUOUS and ledger.accept_late_evidence(key, failed=True):
+        logger.warning("sakrit: %s clean-failure freed a spuriously-ambiguated row (→ FAILED)", key)
+        return
+    logger.warning(
+        "sakrit: %s clean-failure write was rejected (row is %s) — lost the lease mid-dispatch",
+        key,
+        state.value if state else None,
     )
 
 
@@ -226,13 +246,8 @@ def settle_leased(
                     stop.set()
                     thread.join()
         except BaseException as exc:
-            # Hygiene: a rejected FAILED write means we lost the lease mid-dispatch — a peer
-            # already took over. Don't discard the signal; log it (the peer's resolution
-            # stands, and this exception still propagates).
-            if isinstance(exc, clean_failures) and not ledger.fence(key, token, EffectState.FAILED):
-                logger.warning(
-                    "sakrit: %s clean-failure FAILED write was rejected (lease lost)", key
-                )
+            if isinstance(exc, clean_failures):
+                _record_failure_fenced(ledger, key, token)  # V-11: self-heal on a rejected fence
             raise
         finally:
             _current_key.reset(set_token)
@@ -381,13 +396,8 @@ async def settle_leased_async(
             finally:
                 await _stop_heartbeat_async(beat)  # stop before any post-dispatch write
         except BaseException as exc:
-            # Hygiene: a rejected FAILED write means we lost the lease mid-dispatch — a peer
-            # already took over. Don't discard the signal; log it (the peer's resolution
-            # stands, and this exception still propagates).
-            if isinstance(exc, clean_failures) and not ledger.fence(key, token, EffectState.FAILED):
-                logger.warning(
-                    "sakrit: %s clean-failure FAILED write was rejected (lease lost)", key
-                )
+            if isinstance(exc, clean_failures):
+                _record_failure_fenced(ledger, key, token)  # V-11: self-heal on a rejected fence
             raise
         finally:
             _current_key.reset(set_token)

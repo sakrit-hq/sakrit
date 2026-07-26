@@ -802,24 +802,40 @@ class SqliteLedger:
         )
         return cur.rowcount > 0
 
-    def accept_late_evidence(self, key: str, result: object) -> bool:
-        """A returning zombie's terminal outcome, recorded onto an AMBIGUOUS row.
+    def accept_late_evidence(
+        self, key: str, result: object = None, *, failed: bool = False
+    ) -> bool:
+        """A returning owner's terminal outcome, recorded onto a row it no longer fences.
 
-        AMBIGUOUS has no live owner, and the zombie is the only party that knows
-        what happened — so the write strictly increases information and is accepted
-        (self-healing spurious ambiguity). Applies only while the row is AMBIGUOUS.
+        The **sole sanctioned path** that resolves an AMBIGUOUS row (P3-6/P3-7) and the one
+        deliberate exception to fence's write-once rule. Honor-system: it trusts the caller to
+        be the genuine executor — sound because its only caller is ``_record_success_fenced`` /
+        ``_record_failure_fenced``, reached only by a worker that actually ran (or provably
+        did *not* run) the effect; a bumped fence has already invalidated any zombie's token.
 
-        This is the **sole sanctioned path** that resolves an AMBIGUOUS row (P3-6/P3-7):
-        ``fence`` is write-once and cannot touch a terminal row, so ambiguity no longer
-        heals by accident through a stale fenced write. Discipline/limits still open
-        (deferred to the engine-wired leased loop, P3-8): the write is honor-system — it
-        trusts the caller to be the returning owner (no token/owner check, because a bumped
-        fence has already invalidated the zombie's token) — and it is success-only; a zombie
-        that knows it *cleanly failed* cannot yet contribute that (row-freeing) evidence.
+        - ``failed=False`` (success): the effect *happened*. Heal ``AMBIGUOUS`` **or** a peer's
+          ``FAILED``→``SUCCEEDED`` — success outranks a clean-failure claim (V-11): a peer's
+          "already exists" 4xx that fenced FAILED is corrected by the owner that truly landed it.
+        - ``failed=True`` (clean failure): the effect provably did *not* run. Free a spuriously
+          ``AMBIGUOUS`` row → ``FAILED`` (re-claimable), so a clean-failed zombie no longer
+          strands the row forever (item 6). Never overwrites a ``SUCCEEDED`` (success wins).
         """
+        if failed:
+            cur = self.conn.execute(
+                "UPDATE effects SET state = ?, resolved_by = ?, settled_at = ? "
+                "WHERE key = ? AND state = ?",
+                (
+                    EffectState.FAILED.value,
+                    "late_evidence",
+                    _now(),
+                    key,
+                    EffectState.AMBIGUOUS.value,
+                ),
+            )
+            return cur.rowcount > 0
         cur = self.conn.execute(
             "UPDATE effects SET state = ?, result = ?, resolved_by = ?, settled_at = ? "
-            "WHERE key = ? AND state = ?",
+            "WHERE key = ? AND state IN (?, ?)",
             (
                 EffectState.SUCCEEDED.value,
                 json.dumps(result),
@@ -827,6 +843,7 @@ class SqliteLedger:
                 _now(),
                 key,
                 EffectState.AMBIGUOUS.value,
+                EffectState.FAILED.value,
             ),
         )
         return cur.rowcount > 0

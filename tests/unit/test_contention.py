@@ -17,7 +17,12 @@ import pytest
 
 from sakrit.core import EffectState, SqliteLedger
 from sakrit.core.errors import AmbiguousOutcome, DivergentRetry
-from sakrit.core.leased import _record_success_fenced, settle_leased, settle_leased_async
+from sakrit.core.leased import (
+    _record_failure_fenced,
+    _record_success_fenced,
+    settle_leased,
+    settle_leased_async,
+)
 from sakrit.core.ledger import ClaimKind, Replayed
 from sakrit.core.reconcile import Reconciliation
 
@@ -965,3 +970,41 @@ def test_v10_adopt_path_refuses_a_divergent_recorded_result() -> None:
     )
     with pytest.raises(DivergentRetry):
         _record_success_fenced(led, "k", a.fencing_token, "ours", "fp-A")
+
+
+def test_v11_success_outranks_a_peer_clean_failed_row() -> None:
+    # V-11: a peer re-dispatched, got an "already exists" clean-4xx, fenced FAILED. The true
+    # owner returns knowing SUCCESS → _record_success_fenced heals FAILED → SUCCEEDED (the
+    # effect *happened*), so the row is not left re-claimable to re-dispatch a landed effect.
+    led = _led()
+    a = led.claim_leased("k", "s", "t", "fp", owner="A", now=100.0, lease_seconds=LEASE)
+    led.fence("k", a.fencing_token, EffectState.EXECUTING)
+    led.conn.execute(
+        "UPDATE effects SET state=?, fencing_token=fencing_token+1 WHERE key=?",
+        (EffectState.FAILED.value, "k"),
+    )
+    out = _record_success_fenced(led, "k", a.fencing_token, "landed")
+    assert out == "landed"
+    assert led.state_of("k") is EffectState.SUCCEEDED  # success corrected the clean-failure
+
+
+def test_v11_clean_failure_frees_a_spuriously_ambiguated_row() -> None:
+    # item 6: a forbidden takeover ambiguated the row; the owner returns knowing it CLEANLY
+    # FAILED (nothing ran) → _record_failure_fenced frees AMBIGUOUS → FAILED (re-claimable),
+    # instead of stranding it AMBIGUOUS forever.
+    led = _led()
+    a = led.claim_leased("k", "s", "t", "fp", owner="A", now=100.0, lease_seconds=LEASE)
+    led.fence("k", a.fencing_token, EffectState.EXECUTING)
+    led.claim_leased("k", "s", "t", "fp", owner="B", now=200.0, lease_seconds=LEASE)  # forbidden
+    assert led.state_of("k") is EffectState.AMBIGUOUS
+    _record_failure_fenced(led, "k", a.fencing_token)  # A's stale token → heals via late evidence
+    assert led.state_of("k") is EffectState.FAILED
+
+
+def test_v11_clean_failure_late_evidence_never_overwrites_success() -> None:
+    led = _led()
+    led.claim_leased("k", "s", "t", "fp", owner="A", now=100.0, lease_seconds=LEASE)
+    led.fence("k", 1, EffectState.EXECUTING)
+    led.fence("k", 1, EffectState.SUCCEEDED, result="ok")
+    assert led.accept_late_evidence("k", failed=True) is False  # success wins
+    assert led.state_of("k") is EffectState.SUCCEEDED
