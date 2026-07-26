@@ -21,7 +21,13 @@ pytestmark = pytest.mark.chaos
 _WORKER = Path(__file__).parent / "worker.py"
 
 
-def _run(tmp: Path, scenario: str, crash_at: str | None) -> None:
+_KILL_CODE = 137  # os._exit(137) at the seam — models 128 + SIGKILL(9)
+
+
+def _run(tmp: Path, scenario: str, crash_at: str | None) -> int:
+    """Run one worker process. Returns its exit code so the caller can assert the kill
+    actually fired (P2-1): a seam run must exit _KILL_CODE, a clean run must exit 0 —
+    otherwise the boundary was never reached and the "kill" was vacuous."""
     env = dict(os.environ)
     env["CHAOS_SCENARIO"] = scenario
     env["CHAOS_DB"] = str(tmp / "ledger.sqlite")
@@ -31,7 +37,8 @@ def _run(tmp: Path, scenario: str, crash_at: str | None) -> None:
     if crash_at is not None:
         env["SAKRIT_TESTING"] = "1"
         env["SAKRIT_CRASH_AT"] = crash_at
-    subprocess.run([sys.executable, str(_WORKER)], env=env, capture_output=True, text=True)
+    proc = subprocess.run([sys.executable, str(_WORKER)], env=env, capture_output=True, text=True)
+    return proc.returncode
 
 
 def _world_count(tmp: Path) -> int:
@@ -83,7 +90,13 @@ def test_chaos_cell(
     tmp_path: Path, scenario: str, phases: list[str | None], world: int, state: str
 ) -> None:
     for crash_at in phases:
-        _run(tmp_path, scenario, crash_at)
+        code = _run(tmp_path, scenario, crash_at)
+        if crash_at is None:
+            assert code == 0, f"clean run should exit 0, got {code}"
+        else:
+            # P2-1: prove the kill was real. If the seam wasn't reached the process would
+            # exit 0, and the "crash at {crash_at}" cell would be silently vacuous.
+            assert code == _KILL_CODE, f"crash at {crash_at!r} should hard-kill, got exit {code}"
     assert _world_count(tmp_path) == world, f"world deliveries: {_world_count(tmp_path)}"
     assert state in _ledger_states(tmp_path), f"ledger states: {_ledger_states(tmp_path)}"
     # Belt-and-braces: no delivery record ever repeats (dedup and replay are exact).
@@ -96,6 +109,6 @@ def test_chaos_cell(
 def test_unguarded_control_duplicates(tmp_path: Path) -> None:
     # The deliberately red cell: without Sakrit, a crash after the world write then a
     # restart re-delivers. The bug is real — this is the "before" picture.
-    _run(tmp_path, "control", "after_world_write")  # deliver, then die
-    _run(tmp_path, "control", None)  # restart -> deliver again
+    assert _run(tmp_path, "control", "after_world_write") == _KILL_CODE  # deliver, then die
+    assert _run(tmp_path, "control", None) == 0  # restart -> deliver again
     assert _world_count(tmp_path) == 2
