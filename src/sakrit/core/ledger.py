@@ -14,9 +14,10 @@ Act II subset of the state machine::
                         (crash before dispatch: safe)            └── crash ──> (EXECUTING
                                                                     stays; recovery → AMBIGUOUS)
 
-Deferred: ``BUFFERED`` (outbox), leases/fencing (multi-worker), ``RECONCILING``
-(L1). This backend is SQLite single-writer (``BEGIN IMMEDIATE``); Postgres and the
-ledger/adapter split come later.
+L1/L2R reconciliation and the multi-worker contention protocol (leases, fencing,
+late evidence) are implemented below. What remains ("Act III-M"): a Postgres
+backend and a concurrent settle loop that drives that protocol under real load.
+Deferred to Act IV: ``BUFFERED`` (the outbox / approval gating).
 """
 
 from __future__ import annotations
@@ -52,6 +53,7 @@ class ClaimKind(Enum):
     PROCEED = "proceed"  # we own a fresh/re-claimable row — execute it
     REPLAY = "replay"  # already SUCCEEDED — return the saved result (check fp)
     AMBIGUOUS = "ambiguous"  # crashed in the window — must surface, do not execute
+    BUSY = "busy"  # a live lease holds it (multi-worker) — wait for the owner's result
 
 
 @dataclass(frozen=True)
@@ -59,6 +61,7 @@ class Claim:
     kind: ClaimKind
     result: object | None = None
     fingerprint: str | None = None
+    fencing_token: int = 0  # multi-worker: guards this owner's writes against a zombie
 
 
 @dataclass(frozen=True)
@@ -92,7 +95,11 @@ CREATE TABLE IF NOT EXISTS effects (
   result_ref     TEXT,
   error          TEXT,
   created_at     TEXT NOT NULL,
-  settled_at     TEXT
+  settled_at     TEXT,
+  fencing_token  INTEGER NOT NULL DEFAULT 0,
+  lease_owner    TEXT,
+  lease_expires  REAL,
+  resolved_by    TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_scope_state ON effects (scope, state);
 """
@@ -331,6 +338,149 @@ class SqliteLedger:
             "UPDATE effects SET state = ?, settled_at = ? WHERE key = ?",
             (EffectState.AMBIGUOUS.value, _now(), key),
         )
+
+    # --- multi-worker contention: leases, fencing, late evidence ----------
+    #
+    # The protocol below is the foundation for the multi-worker ("Act III-M")
+    # path. It is verified deterministically here; wiring it into a concurrent
+    # settle loop over a Postgres backend, plus true-concurrency chaos, is the
+    # remaining Act III-M work. Single-worker deployments never touch it.
+    def claim_leased(
+        self,
+        key: str,
+        scope: str,
+        tool: str,
+        fingerprint: str,
+        *,
+        owner: str,
+        now: float,
+        lease_seconds: float,
+        provider_dedup: bool = False,
+        reconcilable: bool = False,
+    ) -> Claim:
+        """Atomic lease-based claim (multi-worker).
+
+        A live lease held by another worker → ``BUSY`` (wait for its result). An
+        expired lease is a presumed-dead owner → **takeover by ladder**: a pre-
+        dispatch (``CLAIMED``) row or an L2/L1 ``EXECUTING`` row is re-owned with a
+        bumped fencing token; an L0 ``EXECUTING`` row cannot be safely retried, so it
+        surfaces ``AMBIGUOUS`` (forbidden takeover). Fencing makes a returning zombie
+        harmless: its stale-token writes are rejected (see :meth:`fence`).
+        """
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.conn.execute(
+                "SELECT state, result, fingerprint, result_ref, fencing_token, lease_owner, "
+                "lease_expires FROM effects WHERE key = ?",
+                (key,),
+            ).fetchone()
+            if row is None:
+                token = 1
+                self.conn.execute(
+                    "INSERT INTO effects (key, scope, tool, fingerprint, state, provider_dedup, "
+                    "reconcilable, created_at, fencing_token, lease_owner, lease_expires) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        key,
+                        scope,
+                        tool,
+                        fingerprint,
+                        EffectState.CLAIMED.value,
+                        int(provider_dedup),
+                        int(reconcilable),
+                        _now(),
+                        token,
+                        owner,
+                        now + lease_seconds,
+                    ),
+                )
+                claim = Claim(ClaimKind.PROCEED, fencing_token=token)
+            else:
+                state = EffectState(row[0])
+                token, lease_owner, lease_expires = row[4], row[5], row[6]
+                if state is EffectState.SUCCEEDED:
+                    result = (
+                        Replayed(key, row[3])
+                        if row[3] is not None
+                        else (None if row[1] is None else json.loads(row[1]))
+                    )
+                    claim = Claim(ClaimKind.REPLAY, result=result, fingerprint=row[2])
+                elif state is EffectState.AMBIGUOUS:
+                    claim = Claim(ClaimKind.AMBIGUOUS)
+                elif lease_expires is not None and lease_expires > now and lease_owner != owner:
+                    claim = Claim(ClaimKind.BUSY)  # a live owner holds it
+                elif state is EffectState.EXECUTING and not (provider_dedup or reconcilable):
+                    # L0 expired-lease takeover is forbidden — no safe retry exists.
+                    self.conn.execute(
+                        "UPDATE effects SET state = ?, settled_at = ? WHERE key = ?",
+                        (EffectState.AMBIGUOUS.value, _now(), key),
+                    )
+                    claim = Claim(ClaimKind.AMBIGUOUS)
+                else:
+                    # Expired lease on a re-ownable row → take over, bump the fence.
+                    new_token = token + 1
+                    self.conn.execute(
+                        "UPDATE effects SET state = ?, fingerprint = ?, fencing_token = ?, "
+                        "lease_owner = ?, lease_expires = ? WHERE key = ?",
+                        (
+                            EffectState.CLAIMED.value,
+                            fingerprint,
+                            new_token,
+                            owner,
+                            now + lease_seconds,
+                            key,
+                        ),
+                    )
+                    claim = Claim(ClaimKind.PROCEED, fencing_token=new_token)
+            self.conn.execute("COMMIT")
+            return claim
+        except BaseException:
+            self.conn.execute("ROLLBACK")
+            raise
+
+    def fence(self, key: str, token: int, state: EffectState, *, result: object = None) -> bool:
+        """A fenced state transition: applies only if ``token`` is still current.
+
+        Returns whether it applied. A zombie worker whose lease was taken over
+        carries a stale token, so its writes are rejected — it cannot corrupt a row
+        it no longer owns.
+        """
+        encoded = None if state is not EffectState.SUCCEEDED else json.dumps(result)
+        cur = self.conn.execute(
+            "UPDATE effects SET state = ?, result = ?, settled_at = ? "
+            "WHERE key = ? AND fencing_token = ?",
+            (state.value, encoded, _now(), key, token),
+        )
+        return cur.rowcount > 0
+
+    def heartbeat(self, key: str, owner: str, now: float, lease_seconds: float) -> bool:
+        """Extend our lease so a slow-but-alive worker is not presumed dead."""
+        cur = self.conn.execute(
+            "UPDATE effects SET lease_expires = ? WHERE key = ? AND lease_owner = ?",
+            (now + lease_seconds, key, owner),
+        )
+        return cur.rowcount > 0
+
+    def accept_late_evidence(self, key: str, result: object) -> bool:
+        """A returning zombie's terminal outcome, recorded onto an AMBIGUOUS row.
+
+        AMBIGUOUS has no live owner, and the zombie is the only party that knows
+        what happened — so the write strictly increases information and is accepted
+        (self-healing spurious ambiguity). Applies only while the row is AMBIGUOUS.
+        """
+        cur = self.conn.execute(
+            "UPDATE effects SET state = ?, result = ?, resolved_by = ?, settled_at = ? "
+            "WHERE key = ? AND state = ?",
+            (
+                EffectState.SUCCEEDED.value,
+                json.dumps(result),
+                "late_evidence",
+                _now(),
+                key,
+                EffectState.AMBIGUOUS.value,
+            ),
+        )
+        return cur.rowcount > 0
 
     def keys_in(self, state: EffectState) -> Iterable[str]:
         rows = self.conn.execute(
