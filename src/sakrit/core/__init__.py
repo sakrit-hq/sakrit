@@ -9,7 +9,7 @@ glue lives in ``sakrit.adapters``. This boundary is what lets the guarantee be
 framework-agnostic — keep it clean.
 """
 
-from sakrit.core.adapter import RuntimeAdapter, resolve_coordinate
+from sakrit.core.adapter import ReservedAdapter, RuntimeAdapter, resolve_coordinate
 from sakrit.core.canonical import canonicalize
 from sakrit.core.context import current_key
 from sakrit.core.coordinate import Capabilities, Coordinate, Stability
@@ -47,6 +47,7 @@ __all__ = [
     "Reconciliation",
     "RegeneratedDuplicate",
     "Replayed",
+    "ReservedAdapter",
     "RuntimeAdapter",
     "SakritError",
     "SqliteLedger",

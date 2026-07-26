@@ -123,7 +123,13 @@ def test_fakeadapter_reports_stability_and_capabilities() -> None:
     assert adapter.scope_terminal("fake-run") is True
 
 
-def test_on_recovery_invokes_scan() -> None:
-    calls: list[str] = []
-    FakeAdapter().on_recovery(lambda: calls.append("scanned"))
-    assert calls == ["scanned"]
+def test_reserved_adapter_methods_are_off_the_stable_surface() -> None:
+    # P5-4: RuntimeAdapter (v1 stable) is exactly current_coordinate(); the reserved methods
+    # (semantics unfixed) satisfy ReservedAdapter but are not part of the frozen contract, and
+    # on_recovery was removed entirely (the engine owns recovery).
+    from sakrit.core import ReservedAdapter, RuntimeAdapter
+
+    a = FakeAdapter()
+    assert isinstance(a, RuntimeAdapter)  # provides the one consumed method
+    assert isinstance(a, ReservedAdapter)  # still offers the reserved appendix
+    assert not hasattr(a, "on_recovery")  # the false contract is gone

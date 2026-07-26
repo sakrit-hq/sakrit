@@ -13,8 +13,6 @@ extra (``pip install sakrit[langgraph]``); import this module explicitly so plai
 
 from __future__ import annotations
 
-from collections.abc import Callable
-
 from langgraph.config import get_config
 
 from sakrit.core.coordinate import Capabilities, Coordinate, Stability
@@ -28,9 +26,6 @@ SUPPORTED_LANGGRAPH = (">=1.0", "<2.0")
 class LangGraphAdapter:
     """A :class:`~sakrit.core.adapter.RuntimeAdapter` over LangGraph's checkpoints."""
 
-    def __init__(self) -> None:
-        self._scan: Callable[[], None] | None = None
-
     def current_coordinate(self) -> Coordinate | None:
         try:
             conf = get_config().get("configurable", {})
@@ -43,6 +38,9 @@ class LangGraphAdapter:
             return None
         return Coordinate(scope=str(thread), call_site=str(ns).encode("utf-8"))
 
+    # --- ReservedAdapter (P5-4: semantics unfixed, not yet consumed). on_recovery was
+    # removed — the engine owns recovery (Sakrit.guard runs it once before the first claim),
+    # so "the adapter decides when recovery runs" was already false.
     def stability_domain(self) -> Stability:
         # Resume replays the recorded path; a fresh invocation that re-plans is R3
         # (epochs, deferred). Within-run resume/retry is REPLAY|RETRY.
@@ -50,11 +48,6 @@ class LangGraphAdapter:
 
     def capabilities(self) -> Capabilities:
         return Capabilities.NONE
-
-    def on_recovery(self, scan: Callable[[], None]) -> None:
-        # LangGraph has no global startup hook; the integrator runs the scan at
-        # process startup (``ledger.recover()``). Stashed here for convenience.
-        self._scan = scan
 
     def scope_terminal(self, scope: str) -> bool:
         return False

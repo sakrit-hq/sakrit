@@ -151,7 +151,8 @@ class Sakrit:
         # Q14 — the engine guarantees recovery runs once per process, before the
         # first claim it issues. The Q1 fix removed claim's lazy safety net, so a
         # crash leftover must be resolved by recovery, not left to chance or the
-        # integrator. No adapter obligation; a missed on_recovery hook is harmless.
+        # integrator. The *engine* owns recovery — no adapter hook (P5-4 removed the
+        # false `on_recovery` "adapter decides when recovery runs" contract).
         # P3-4: the startup scan reads EXECUTING as death-evidence — TRUE only for a
         # single worker. Against a multi-worker ledger it would ambiguate/re-own live
         # peers' rows, so it MUST NOT run there; the leased protocol recovers lazily

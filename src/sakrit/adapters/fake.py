@@ -14,8 +14,6 @@ same coordinate — so the core's dedup can be exercised without any real framew
 
 from __future__ import annotations
 
-from collections.abc import Callable
-
 from sakrit.core.coordinate import Capabilities, Coordinate, Stability
 
 
@@ -46,19 +44,17 @@ class FakeAdapter:
     def mark_terminal(self) -> None:
         self._terminal = True
 
-    # --- RuntimeAdapter protocol ------------------------------------------
+    # --- RuntimeAdapter (v1 stable surface) -------------------------------
     def current_coordinate(self) -> Coordinate | None:
         return self._current
 
+    # --- ReservedAdapter (P5-4: semantics unfixed, not yet consumed) ------
     def stability_domain(self) -> Stability:
         # A deterministic in-memory runtime replays exactly; no re-planning.
         return Stability.REPLAY | Stability.RETRY
 
     def capabilities(self) -> Capabilities:
         return Capabilities.NONE
-
-    def on_recovery(self, scan: Callable[[], None]) -> None:
-        scan()
 
     def scope_terminal(self, scope: str) -> bool:
         return self._terminal

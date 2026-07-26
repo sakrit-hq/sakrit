@@ -11,7 +11,6 @@ See ``docs/design.md`` §4 (ladder), §5 (agnosticism), §11 (the seam).
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from typing import Protocol, runtime_checkable
 
 from sakrit.core.coordinate import Capabilities, Coordinate, Stability
@@ -24,26 +23,45 @@ _BUSINESS_SCOPE = "global"
 
 @runtime_checkable
 class RuntimeAdapter(Protocol):
-    """The complete adapter surface. Everything framework-shaped lives behind this."""
+    """The **v1 stable** adapter surface — exactly what the core consumes (P5-4).
+
+    Only ``current_coordinate()`` is called anywhere in the core (``resolve_coordinate``), so
+    it is the whole frozen contract. The four other methods a runtime *might* one day provide
+    (stability domain, capabilities, retention, recovery scheduling) are **not** frozen — they
+    gate machinery that doesn't exist yet, and freezing semantics never exercised would make an
+    Act IV adapter author implement to a guess the core later contradicts. They live on the
+    ``ReservedAdapter`` appendix below, to grow into ``RuntimeAdapter`` one method at a time as
+    the core adds a caller for each.
+    """
 
     def current_coordinate(self) -> Coordinate | None:
         """The coordinate for the call in progress, or ``None`` → try the ladder."""
         ...
 
+
+@runtime_checkable
+class ReservedAdapter(Protocol):
+    """**Reserved — semantics unfixed, NOT part of the v1 contract (P5-4).** Methods a runtime
+    may implement for future machinery that the core does not yet call; each moves onto the
+    stable ``RuntimeAdapter`` only when a real caller lands. Do not depend on their meaning.
+
+    (Note: ``on_recovery`` — "the adapter decides *when* recovery runs" — was deliberately
+    **removed**: the engine owns recovery (``Sakrit.guard`` runs it once before the first
+    claim), so that contract was already false and must not freeze. A recovery-scheduling hook,
+    if ever needed, will be designed against how recovery actually runs.)
+    """
+
     def stability_domain(self) -> Stability:
-        """The re-execution regimes across which ``call_site`` is stable."""
+        """RESERVED. The re-execution regimes across which ``call_site`` is stable (gates the
+        R3/plan-epoch machinery that does not exist yet)."""
         ...
 
     def capabilities(self) -> Capabilities:
-        """Optional capabilities the core feature-gates on."""
-        ...
-
-    def on_recovery(self, scan: Callable[[], None]) -> None:
-        """Register the recovery scan; the adapter decides *when* it runs."""
+        """RESERVED. Optional capabilities the core would feature-gate on."""
         ...
 
     def scope_terminal(self, scope: str) -> bool:
-        """Whether a scope is terminal (drives retention/archival)."""
+        """RESERVED. Whether a scope is terminal (would drive retention/archival)."""
         ...
 
 
