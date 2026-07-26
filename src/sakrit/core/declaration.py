@@ -19,6 +19,22 @@ from sakrit.core.errors import SakritError
 from sakrit.core.reconcile import Reconciliation
 
 
+def _encompasses_timeout(exc_type: type[BaseException]) -> bool:
+    """Whether declaring ``exc_type`` a clean failure would also swallow a *timeout* — the
+    ambiguous window where the effect may already have landed (P1-12).
+
+    True when ``except exc_type`` catches a builtin ``TimeoutError`` (so ``exc_type`` is
+    ``TimeoutError`` / ``OSError`` / ``Exception`` / ``BaseException`` — the broad catch-alls),
+    or when ``exc_type`` (or a base) is itself a *Timeout* type (a third-party network timeout,
+    matched by name since we cannot import every provider SDK). It does *not* catch every
+    over-broad third-party base (e.g. ``requests.exceptions.RequestException`` does not subclass
+    the builtin ``TimeoutError`` and isn't named "timeout"); the docstring on ``clean_failures``
+    states the developer's remaining responsibility."""
+    if issubclass(TimeoutError, exc_type):
+        return True
+    return any("timeout" in base.__name__.lower() for base in exc_type.__mro__)
+
+
 class ArgClass(Enum):
     IDENTITY = "identity"
     CONTENT = "content"
@@ -45,7 +61,13 @@ class EffectDecl:
     """Exception types the author asserts imply the effect did NOT execute (e.g.
     validation errors before any I/O, a provider 4xx meaning "rejected, nothing
     done"). Only these record ``FAILED`` (safely re-claimable). Every other
-    exception is treated as *ambiguous* — the effect may have landed."""
+    exception is treated as *ambiguous* — the effect may have landed.
+
+    **The most dangerous declaration in the system** (P1-12): it is the one knob that can
+    reopen a duplicate. A type that also catches a *timeout* (the ambiguous window) is refused
+    at construction — but Sakrit cannot inspect every SDK's exception tree, so **you** must
+    ensure the types you name genuinely prove non-execution: never an over-broad network base
+    (e.g. ``requests.exceptions.RequestException``, which *includes* ``Timeout``)."""
     provider_ttl_s: float | None = None
     """How long the provider remembers an idempotency key (L2). Beyond this horizon the
     provider has forgotten the key, so a crash-recovery re-dispatch would *not* dedup —
@@ -67,6 +89,22 @@ class EffectDecl:
     assumption; assert ``strong`` explicitly to unlock auto-retry."""
 
     def __post_init__(self) -> None:
+        for exc_type in self.clean_failures:
+            if _encompasses_timeout(exc_type):
+                # P1-12 / §3 anti-reflex: clean_failures is the single knob that reopens Q2 —
+                # the most dangerous declaration in the system, and (unlike arg classes) it had
+                # no friction. A type that also catches a *timeout* classifies the ambiguous
+                # window (the effect MAY have landed) as "clean" → FAILED → re-claimable → a
+                # duplicate of a possibly-completed effect. Refuse it loudly.
+                raise SakritError(
+                    f"{self.tool}: clean_failures includes {exc_type.__name__!r}, which also "
+                    "catches a *timeout* — the ambiguous window where the effect may have "
+                    "landed. Marking it 'clean' records FAILED (re-claimable) and re-dispatches "
+                    "a possibly-completed effect → duplicate. Declare only failures that *prove* "
+                    "the effect did not run (a validation error before any I/O; a provider 4xx "
+                    "meaning 'rejected, nothing done'), never a timeout- or broad-I/O-encompassing "
+                    "type."
+                )
         if self.on_absent not in ("surface", "retry"):
             raise SakritError(f"on_absent must be 'surface' or 'retry', not {self.on_absent!r}")
         if self.provider_read not in ("strong", "eventual"):
