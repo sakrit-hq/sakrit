@@ -13,6 +13,8 @@ SQLite ledger under real thread concurrency (Postgres is a storage swap for scal
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import threading
 import time
 from collections.abc import Callable, Mapping
@@ -22,6 +24,34 @@ from sakrit.core.errors import AmbiguousOutcome, DivergentRetry
 from sakrit.core.ledger import ClaimKind, EffectState, SqliteLedger
 from sakrit.core.reconcile import Reconciliation, Verdict
 from sakrit.core.seams import seam
+
+# Sentinel: reconcile-on-takeover decided the effect did NOT land → re-dispatch it.
+_DISPATCH = object()
+
+
+def _reconcile_on_takeover(
+    ledger: SqliteLedger,
+    key: str,
+    token: int,
+    reconcile: Callable[[str], Reconciliation] | None,
+    on_absent: str,
+) -> object:
+    """Resolve a RECONCILE claim (P1-2): a worker took over a reconcilable row a
+    presumed-dead owner left in flight. Query the provider (read-only ⇒ crash-safe) and:
+    ``SETTLED`` → adopt the record; ``ABSENT`` + ``on_absent="retry"`` → return ``_DISPATCH``
+    (re-dispatch with the token we hold); else (ABSENT+surface / UNKNOWN / no reconcile) →
+    fence ``AMBIGUOUS`` and raise. Shared by the sync and async leased loops."""
+    rec = reconcile(key) if reconcile is not None else Reconciliation.unknown()
+    if rec.verdict is Verdict.SETTLED:
+        ledger.fence(key, token, EffectState.SUCCEEDED, result=rec.result)
+        return rec.result
+    if rec.verdict is Verdict.ABSENT and on_absent == "retry":
+        return _DISPATCH
+    ledger.fence(key, token, EffectState.AMBIGUOUS)
+    raise AmbiguousOutcome(
+        f"{key}: took over a reconcilable in-flight row; provider verdict is "
+        f"{rec.verdict.value} — outcome unknown, resolve it"
+    )
 
 
 def _start_heartbeat(
@@ -108,21 +138,10 @@ def settle_leased(
         token = claim.fencing_token
 
         if claim.kind is ClaimKind.RECONCILE:
-            # P1-2: we took over a reconcilable row that was mid-flight. Ask the provider
-            # what actually happened before touching the effect. Read-only ⇒ crash-safe.
-            rec = reconcile(key) if reconcile is not None else Reconciliation.unknown()
-            if rec.verdict is Verdict.SETTLED:
-                ledger.fence(key, token, EffectState.SUCCEEDED, result=rec.result)
-                return rec.result
-            if not (rec.verdict is Verdict.ABSENT and on_absent == "retry"):
-                # ABSENT+surface (a lagging read may lie) or UNKNOWN → never re-fire.
-                ledger.fence(key, token, EffectState.AMBIGUOUS)
-                raise AmbiguousOutcome(
-                    f"{key}: took over a reconcilable in-flight row; provider verdict is "
-                    f"{rec.verdict.value} — outcome unknown, resolve it"
-                )
-            # ABSENT + retry: the effect provably did not land → safe to re-dispatch
-            # with the token we already hold. Fall through to the write-ahead + dispatch.
+            outcome = _reconcile_on_takeover(ledger, key, token, reconcile, on_absent)
+            if outcome is not _DISPATCH:
+                return outcome
+            # ABSENT + retry: safe to re-dispatch with the token we hold. Fall through.
 
         if not ledger.fence(key, token, EffectState.EXECUTING):  # write-ahead, fenced
             # P1-3: the fence no-op'd — our token is stale, so a peer took the lease over
@@ -146,6 +165,124 @@ def settle_leased(
                     stop, thread = heartbeat
                     stop.set()
                     thread.join()
+        except BaseException as exc:
+            if isinstance(exc, clean_failures):
+                ledger.fence(key, token, EffectState.FAILED)
+            raise
+        finally:
+            _current_key.reset(set_token)
+        ledger.fence(key, token, EffectState.SUCCEEDED, result=result)
+        seam("after_record")
+        return result
+
+
+def _start_heartbeat_async(
+    ledger: SqliteLedger, key: str, lease_seconds: float, interval: float | None
+) -> tuple[asyncio.Event, asyncio.Task[None]] | None:
+    """The async twin of :func:`_start_heartbeat` (P3-5). Renews the lease from an asyncio
+    task on the event loop — no thread, so the SQLite connection is never touched from a
+    second OS thread. Returns ``(stop_event, task)`` or ``None`` (single-worker)."""
+    if not ledger.multi_worker:
+        return None
+    period = interval if interval is not None else max(lease_seconds / 3.0, 0.001)
+    stop = asyncio.Event()
+
+    async def _beat() -> None:
+        while True:
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=period)
+                return  # stop set → done
+            except asyncio.TimeoutError:
+                ledger.heartbeat(key, ledger.owner, lease_seconds)
+
+    return stop, asyncio.ensure_future(_beat())
+
+
+async def _stop_heartbeat_async(
+    beat: tuple[asyncio.Event, asyncio.Task[None]] | None,
+) -> None:
+    if beat is None:
+        return
+    stop, task = beat
+    stop.set()
+    await task  # awaited to completion before any post-dispatch ledger write
+
+
+async def settle_leased_async(
+    ledger: SqliteLedger,
+    *,
+    key: str,
+    scope: str,
+    tool: str,
+    fingerprint: str,
+    fn: Callable[..., object],
+    args: tuple[object, ...] = (),
+    kwargs: Mapping[str, object] | None = None,
+    provider_key_param: str | None = None,
+    provider_ttl_s: float | None = None,
+    clean_failures: tuple[type[BaseException], ...] = (),
+    reconcilable: bool = False,
+    reconcile: Callable[[str], Reconciliation] | None = None,
+    on_absent: str = "surface",
+    lease_seconds: float = 30.0,
+    heartbeat_interval: float | None = None,
+    wait_timeout: float = 30.0,
+    poll: float = 0.01,
+) -> object:
+    """Await an async ``fn`` exactly once for ``key`` across concurrent workers, or return
+    the winner's recorded result. The async twin of :func:`settle_leased`: identical
+    lease/fence/takeover protocol, but the effect is **awaited**, and the BUSY wait and the
+    heartbeat run on the event loop (``asyncio.sleep`` / an asyncio task) rather than a
+    thread — so the SQLite connection stays on one thread. The effect is awaited *before*
+    the record, so SUCCEEDED is never written before it runs."""
+    deadline = time.time() + wait_timeout
+    while True:
+        claim = ledger.claim_leased(
+            key,
+            scope,
+            tool,
+            fingerprint,
+            owner=ledger.owner,
+            lease_seconds=lease_seconds,
+            provider_dedup=provider_key_param is not None,
+            provider_ttl_s=provider_ttl_s,
+            reconcilable=reconcilable,
+        )
+
+        if claim.kind is ClaimKind.REPLAY:
+            if claim.fingerprint != fingerprint:
+                raise DivergentRetry(f"{key}: identity args differ from the recorded action")
+            return claim.result
+        if claim.kind is ClaimKind.AMBIGUOUS:
+            raise AmbiguousOutcome(f"{key}: a prior attempt's outcome is unknown — resolve it")
+        if claim.kind is ClaimKind.BUSY:
+            if time.time() > deadline:
+                raise AmbiguousOutcome(f"{key}: timed out waiting for the lease owner")
+            await asyncio.sleep(poll)
+            continue
+
+        # PROCEED / RECONCILE — we hold the lease and a fencing token.
+        token = claim.fencing_token
+        if claim.kind is ClaimKind.RECONCILE:
+            outcome = _reconcile_on_takeover(ledger, key, token, reconcile, on_absent)
+            if outcome is not _DISPATCH:
+                return outcome
+            # ABSENT + retry: safe to re-dispatch with the token we hold. Fall through.
+
+        if not ledger.fence(key, token, EffectState.EXECUTING):  # write-ahead, fenced (P1-3)
+            if time.time() > deadline:
+                raise AmbiguousOutcome(f"{key}: lost the lease before dispatch and timed out")
+            continue
+        seam("after_mark_executing")
+        set_token = _current_key.set(key)
+        beat = _start_heartbeat_async(ledger, key, lease_seconds, heartbeat_interval)
+        try:
+            try:
+                raw = fn(*args, **dict(kwargs or {}))
+                result = await raw if inspect.isawaitable(raw) else raw
+                seam("after_dispatch")
+            finally:
+                await _stop_heartbeat_async(beat)  # stop before any post-dispatch write
         except BaseException as exc:
             if isinstance(exc, clean_failures):
                 ledger.fence(key, token, EffectState.FAILED)

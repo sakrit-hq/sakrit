@@ -6,6 +6,7 @@ this into a concurrent settle loop over Postgres, plus true-concurrency chaos, i
 the remaining Act III-M work.
 """
 
+import asyncio
 import json
 from datetime import datetime, timedelta, timezone
 
@@ -13,7 +14,7 @@ import pytest
 
 from sakrit.core import EffectState, SqliteLedger
 from sakrit.core.errors import AmbiguousOutcome
-from sakrit.core.leased import settle_leased
+from sakrit.core.leased import settle_leased, settle_leased_async
 from sakrit.core.ledger import ClaimKind, Replayed
 from sakrit.core.reconcile import Reconciliation
 
@@ -536,3 +537,100 @@ def test_leased_l2_unbounded_ttl_takeover_proceeds() -> None:
         provider_dedup=True,
     )
     assert b.kind is ClaimKind.PROCEED
+
+
+def test_settle_leased_async_awaits_and_records_after() -> None:
+    led = _led()
+    order: list[str] = []
+
+    async def effect() -> str:
+        order.append("effect-ran")
+        return "done"
+
+    out = asyncio.run(
+        settle_leased_async(led, key="k", scope="s", tool="t", fingerprint="fp", fn=effect)
+    )
+    assert out == "done"
+    assert order == ["effect-ran"]
+    assert led.state_of("k") is EffectState.SUCCEEDED
+
+
+def test_settle_leased_async_reconcile_settled_no_redispatch() -> None:
+    led = _led()
+    _stale_l1_row(led)  # L1 EXECUTING, lease long expired
+    calls: list[int] = []
+
+    async def fn() -> str:
+        calls.append(1)
+        return "re-sent"
+
+    out = asyncio.run(
+        settle_leased_async(
+            led,
+            key="k",
+            scope="s",
+            tool="t",
+            fingerprint="fp",
+            fn=fn,
+            reconcilable=True,
+            reconcile=lambda k: Reconciliation.settled("provider-record"),
+        )
+    )
+    assert out == "provider-record"
+    assert calls == []  # already happened → adopted, never re-awaited
+    assert led.state_of("k") is EffectState.SUCCEEDED
+
+
+def test_settle_leased_async_clean_failure_records_failed() -> None:
+    led = _led()
+
+    class Rejected(Exception):
+        pass
+
+    async def fn() -> str:
+        raise Rejected("provider 400 — nothing done")
+
+    with pytest.raises(Rejected):
+        asyncio.run(
+            settle_leased_async(
+                led,
+                key="k",
+                scope="s",
+                tool="t",
+                fingerprint="fp",
+                fn=fn,
+                clean_failures=(Rejected,),
+            )
+        )
+    assert led.state_of("k") is EffectState.FAILED
+
+
+def test_settle_leased_async_heartbeats_during_slow_dispatch(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    beats: list[int] = []
+
+    class CountingLedger(SqliteLedger):
+        def heartbeat(self, key, owner, lease_seconds, now=None):  # type: ignore[no-untyped-def]
+            beats.append(1)
+            return super().heartbeat(key, owner, lease_seconds, now=now)
+
+    led = CountingLedger(str(tmp_path / "l.db"), multi_worker=True)
+
+    async def slow() -> str:
+        await asyncio.sleep(0.15)
+        return "ok"
+
+    out = asyncio.run(
+        settle_leased_async(
+            led,
+            key="k",
+            scope="s",
+            tool="t",
+            fingerprint="fp",
+            fn=slow,
+            lease_seconds=0.09,
+            heartbeat_interval=0.03,
+        )
+    )
+    assert out == "ok"
+    assert len(beats) >= 1  # the lease was renewed on the event loop while the effect ran
+    led.close()

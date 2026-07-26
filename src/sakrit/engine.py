@@ -24,7 +24,7 @@ from sakrit.core.declaration import EffectDecl
 from sakrit.core.errors import SakritError
 from sakrit.core.fingerprint import fingerprint
 from sakrit.core.keys import positional_key
-from sakrit.core.leased import settle_leased
+from sakrit.core.leased import settle_leased, settle_leased_async
 from sakrit.core.ledger import SqliteLedger
 from sakrit.core.reconcile import Verdict
 from sakrit.core.settle import settle, settle_async
@@ -210,18 +210,29 @@ class Sakrit:
         occurrence: int | None = None,
     ) -> object:
         """Await an **async** ``fn`` exactly once for its logical step, or replay its
-        result. The effect is awaited before Sakrit records — no record-before-effect."""
-        if self._leased:
-            # settle_leased is a blocking loop (BUSY-poll + a heartbeat thread) and calls
-            # fn synchronously — it cannot await an async tool. An async leased loop
-            # (settle_leased_async) is the follow-up; fail closed rather than run the
-            # coroutine unawaited (which would re-open the P1-1 record-before-effect hole).
-            raise SakritError(
-                "guard_async is not yet supported on a multi_worker (leased) ledger — the "
-                "async leased loop (settle_leased_async) is not built. Use a sync tool with "
-                "guard/@sk.effect for multi-worker, or a single-worker ledger for async."
-            )
+        result. Against a multi-worker ledger this drives the *async leased* protocol
+        (settle_leased_async); against a single-worker ledger, the async settle path. The
+        effect is awaited before Sakrit records — no record-before-effect."""
         rkey, rscope, fp, kw = self._prepare(decl, fn, args, kwargs, step, key, scope, occurrence)
+        if self._leased:
+            return await settle_leased_async(
+                self._ledger,
+                key=rkey,
+                scope=rscope,
+                tool=decl.tool,
+                fingerprint=fp,
+                fn=fn,
+                args=args,
+                kwargs=kw,
+                provider_key_param=decl.provider_key_param,
+                provider_ttl_s=decl.provider_ttl_s,
+                clean_failures=decl.clean_failures,
+                reconcilable=decl.reconcile is not None,
+                reconcile=decl.reconcile,
+                on_absent=decl.on_absent,
+                lease_seconds=self._lease_seconds,
+                wait_timeout=self._wait_timeout,
+            )
         return await settle_async(
             self._ledger,
             key=rkey,

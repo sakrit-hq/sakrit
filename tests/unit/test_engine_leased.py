@@ -7,10 +7,8 @@ import asyncio
 import threading
 from pathlib import Path
 
-import pytest
-
 from sakrit import EffectDecl, Sakrit, SqliteLedger
-from sakrit.core import ArgClass, SakritError
+from sakrit.core import ArgClass
 
 SECRET = b"deployment-secret"
 DECL = EffectDecl("notify.remind", {"to": ArgClass.IDENTITY})
@@ -117,16 +115,26 @@ def test_leased_engine_captures_provider_ttl(tmp_path: Path) -> None:
     led.close()
 
 
-def test_guard_async_refuses_in_leased_mode(tmp_path: Path) -> None:
-    # settle_leased is a blocking sync loop and cannot await an async tool; refuse loudly
-    # rather than run the coroutine unawaited (which would re-open the P1-1 hole).
+def test_async_tool_runs_once_through_the_leased_engine(tmp_path: Path) -> None:
+    # guard_async now drives settle_leased_async on a multi-worker ledger: the async effect
+    # runs once (fenced), and a retry replays.
     led = SqliteLedger(tmp_path / "l.sqlite", multi_worker=True)
     sk = Sakrit(led, secret=SECRET)
+    calls: list[str] = []
 
     @sk.effect(DECL, key="k")
     async def do(to: str) -> str:
+        await asyncio.sleep(0)
+        calls.append(to)
         return "ok"
 
-    with pytest.raises(SakritError, match="leased"):
-        asyncio.run(do(to="a@x.com"))
+    async def scenario() -> tuple[object, object]:
+        first = await do(to="a@x.com")
+        second = await do(to="a@x.com")  # replay through the async leased loop
+        return first, second
+
+    first, second = asyncio.run(scenario())
+    assert first == second == "ok"
+    assert calls == ["a@x.com"]  # fired exactly once
+    assert _token(led) >= 1  # the leased (fenced) path was taken
     led.close()

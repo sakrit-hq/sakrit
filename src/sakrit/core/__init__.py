@@ -25,7 +25,7 @@ from sakrit.core.errors import (
 )
 from sakrit.core.fingerprint import fingerprint
 from sakrit.core.keys import positional_key
-from sakrit.core.leased import settle_leased
+from sakrit.core.leased import settle_leased, settle_leased_async
 from sakrit.core.ledger import EffectState, Replayed, SqliteLedger
 from sakrit.core.reconcile import Reconciliation, Verdict
 from sakrit.core.settle import settle, settle_async
@@ -57,4 +57,5 @@ __all__ = [
     "settle",
     "settle_async",
     "settle_leased",
+    "settle_leased_async",
 ]
