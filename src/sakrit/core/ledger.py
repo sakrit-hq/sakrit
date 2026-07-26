@@ -150,6 +150,7 @@ class SqliteLedger:
         multi_worker: bool = False,
         owner: str | None = None,
         on_ambiguous: Callable[[str], None] | None = None,
+        on_replay: Callable[[str], None] | None = None,
     ) -> None:
         self._path = str(path)
         self._lock_fd: int | None = None
@@ -168,6 +169,10 @@ class SqliteLedger:
         # Every transition *into* AMBIGUOUS routes through _tell_ambiguous, which logs a
         # warning (never silent) and fires this optional alert/metric hook.
         self._on_ambiguous = on_ambiguous
+        # V-2 rider: a served replay (recorded result returned, effect NOT re-fired) is
+        # routine on resume/retry — but it must be *told*, so an operator asking "why didn't
+        # the repeat fire?" finds the answer. Logged at INFO; fires this optional hook.
+        self._on_replay = on_replay
         # P3-3: multi-worker coordination is *between* workers over one shared database.
         # An in-memory DB is private to its connection, so N multi-worker processes would
         # get N isolated ledgers — zero dedup, N× execution, silently. Refuse it.
@@ -558,6 +563,19 @@ class SqliteLedger:
                 self._on_ambiguous(key)
             except Exception:  # noqa: BLE001 — never let alerting break the ledger
                 logger.exception("sakrit: on_ambiguous hook raised for %s", key)
+
+    def _tell_replay(self, key: str) -> None:
+        """Announce that a recorded result was served instead of re-running the effect
+        (V-2 rider). Routine on resume/retry — INFO, not an alert — but *told*, so a
+        repeat that was intentionally not re-fired (P4-1's pinned swallow) is visible to an
+        operator, not silent. Fires the optional ``on_replay`` hook; a raising hook is
+        logged and swallowed (a replay is not a failure)."""
+        logger.info("sakrit: %s served a recorded result — effect not re-fired (replay)", key)
+        if self._on_replay is not None:
+            try:
+                self._on_replay(key)
+            except Exception:  # noqa: BLE001
+                logger.exception("sakrit: on_replay hook raised for %s", key)
 
     # --- multi-worker contention: leases, fencing, late evidence ----------
     #

@@ -68,3 +68,41 @@ def test_ambiguity_always_logs_even_without_a_hook(caplog: pytest.LogCaptureFixt
         led.recover()
     assert "AMBIGUOUS" in caplog.text
     assert "k" in caplog.text
+
+
+# --- V-2 rider: a served replay is told (INFO + on_replay hook), never silent ---
+def test_replay_fires_on_replay_hook_and_logs(caplog: pytest.LogCaptureFixture) -> None:
+    from sakrit.core import positional_key, settle
+    from sakrit.core.coordinate import Coordinate
+
+    replayed: list[str] = []
+    led = SqliteLedger(on_replay=replayed.append)
+    key = positional_key(Coordinate("global", b"reminder"), "t.send")
+    calls: list[int] = []
+
+    def fn() -> str:
+        calls.append(1)
+        return "sent"
+
+    settle(led, key=key, scope="global", tool="t.send", fingerprint="fp", fn=fn)  # executes
+    with caplog.at_level(logging.INFO, logger="sakrit"):
+        out = settle(led, key=key, scope="global", tool="t.send", fingerprint="fp", fn=fn)
+
+    assert out == "sent"
+    assert calls == [1]  # the second call did NOT re-fire — it replayed
+    assert replayed == [key]  # on_replay was told the key
+    assert "replay" in caplog.text.lower()  # and logged (quiet-but-told)
+
+
+def test_replay_hook_exception_never_breaks_the_replay() -> None:
+    from sakrit.core import positional_key, settle
+    from sakrit.core.coordinate import Coordinate
+
+    def boom(key: str) -> None:
+        raise RuntimeError("metrics sink down")
+
+    led = SqliteLedger(on_replay=boom)
+    key = positional_key(Coordinate("global", b"k"), "t.send")
+    settle(led, key=key, scope="global", tool="t.send", fingerprint="fp", fn=lambda: "x")
+    out = settle(led, key=key, scope="global", tool="t.send", fingerprint="fp", fn=lambda: "x")
+    assert out == "x"  # the hook raised, but the replay still returned the recorded result

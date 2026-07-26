@@ -155,6 +155,7 @@ def settle_leased(
         if claim.kind is ClaimKind.REPLAY:
             if claim.fingerprint != fingerprint:
                 raise DivergentRetry(f"{key}: identity args differ from the recorded action")
+            ledger._tell_replay(key)  # V-2 rider: served-not-re-fired is told, not silent
             return claim.result
         if claim.kind is ClaimKind.AMBIGUOUS:
             raise AmbiguousOutcome(f"{key}: a prior attempt's outcome is unknown — resolve it")
@@ -313,6 +314,7 @@ async def settle_leased_async(
         if claim.kind is ClaimKind.REPLAY:
             if claim.fingerprint != fingerprint:
                 raise DivergentRetry(f"{key}: identity args differ from the recorded action")
+            ledger._tell_replay(key)  # V-2 rider: served-not-re-fired is told, not silent
             return claim.result
         if claim.kind is ClaimKind.AMBIGUOUS:
             raise AmbiguousOutcome(f"{key}: a prior attempt's outcome is unknown — resolve it")

@@ -181,7 +181,11 @@ class Sakrit:
         """Run a **sync** ``fn`` exactly once for its logical step, or replay its result.
 
         Against a multi-worker ledger this drives the *leased* protocol (lease + fencing +
-        takeover-by-ladder); against a single-worker ledger, the unfenced settle path."""
+        takeover-by-ladder); against a single-worker ledger, the unfenced settle path.
+
+        A deliberate repeat of the same identity args at one call site replays (does not
+        re-fire) unless wrapped in :meth:`step` — see the sequential-repeat trap on
+        :meth:`effect`."""
         _reject_async(fn)  # an async tool must use guard_async, not the sync record path
         rkey, rscope, fp, kw = self._prepare(decl, fn, args, kwargs, step, key, scope, occurrence)
         if self._leased:
@@ -326,6 +330,17 @@ class Sakrit:
         A fixed ``occurrence`` here freezes one coordinate per call site. For repeats at
         one site (a loop, deliberate resend, or parallel same-tool calls), leave it and
         wrap the call in :meth:`step` so each iteration gets a distinct coordinate (P4-1).
+
+        WARNING — the sequential-repeat trap (P4-1). Calling the same guarded tool **again
+        at the same call site with the same identity args**, *not* wrapped in :meth:`step`,
+        is treated as a retry: the recorded result is replayed and **the effect does not
+        re-fire**. That is correct for a crash/resume retry but a silent swallow for a
+        *deliberate* repeat (e.g. "send the same reminder twice"). It is logged at INFO and
+        fires the ledger's ``on_replay`` hook, so it is told — but to actually fire twice,
+        wrap each call in ``with sk.step(occurrence=i): …``. (A *concurrent* second call
+        that overlaps a still-running first is not silent — it hits the live row and raises
+        ``EffectInFlightError``; only the sequential same-args repeat swallows.) Automatic
+        occurrence handling is deferred — see ``docs/dev-notes/occurrence.md``.
         """
         self._registry.setdefault(decl.tool, decl)  # available to recovery before first call
 

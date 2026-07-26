@@ -49,6 +49,23 @@ def send_email(to: str, subject: str, body: str) -> str:
 # A re-run returns the saved result instead of sending again.
 ```
 
+> **The sequential-repeat trap.** Calling the *same* guarded tool again at the *same*
+> call site with the *same* identity args (e.g. deliberately sending one reminder twice)
+> replays the recorded result — the effect does **not** re-fire. That is exactly right for
+> a crash/resume retry, but a silent no-op for a deliberate repeat. To fire it again, give
+> each call its own position:
+>
+> ```python
+> for i, recipient in enumerate(recipients):
+>     with sk.step(occurrence=i):
+>         send_email(to=recipient, subject=..., body=...)
+> ```
+>
+> Every replay is logged at INFO (and fires the ledger's `on_replay` hook), so it is
+> *told*, not silent. A *concurrent* overlapping second call is loud (`EffectInFlightError`);
+> only the sequential same-args repeat swallows. Automatic occurrence handling is deferred —
+> see the design notes.
+
 ## Status
 
 **Pre-alpha — the Act II core works.** Exactly-once for single-worker agents on

@@ -57,6 +57,7 @@ def _decide(
                 f"{key}: identity args differ from the recorded action; refusing to "
                 "merge or re-execute (should a reworded field be declared content?)"
             )
+        ledger._tell_replay(key)  # V-2 rider: served-not-re-fired is told, not silent
         return claim.result
     if claim.kind is ClaimKind.AMBIGUOUS:
         raise AmbiguousOutcome(
