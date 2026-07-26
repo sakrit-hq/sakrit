@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 
+from sakrit.core.context import _current_key
 from sakrit.core.errors import AmbiguousOutcome, DivergentRetry
 from sakrit.core.ledger import ClaimKind, SqliteLedger
 
@@ -32,9 +33,10 @@ def settle(
 ) -> object:
     """Run ``fn`` exactly once for ``key`` (durably), or return its saved result.
 
-    When ``provider_key_param`` is set (an L2 tool), the derived key is injected
-    into the call as the provider's idempotency key, so a re-dispatch after a
-    crash-in-window deduplicates at the provider instead of double-firing.
+    ``provider_key_param`` marks an L2 tool (provider-deduplicating): its crash
+    recovery re-dispatches instead of surfacing ambiguity. The tool reads the key to
+    hand its provider via ``sakrit.current_key()`` — a contextvar set here for the
+    duration of the dispatch, so the tool's signature stays clean.
     """
     claim = ledger.claim(
         key, scope, tool, fingerprint, provider_dedup=provider_key_param is not None
@@ -54,12 +56,10 @@ def settle(
         )
 
     # PROCEED — we own the claim.
-    call_kwargs = dict(kwargs or {})
-    if provider_key_param is not None:
-        call_kwargs[provider_key_param] = key  # inject Sakrit's key as the provider idempotency key
     ledger.mark_executing(key)  # durable BEFORE dispatch
+    token = _current_key.set(key)  # the tool may read this via sakrit.current_key()
     try:
-        result = fn(*args, **call_kwargs)
+        result = fn(*args, **dict(kwargs or {}))
     except BaseException as exc:
         # A *declared* clean failure proves the effect did not execute → FAILED
         # (safely re-claimable). Every other exception is AMBIGUOUS: the effect may
@@ -69,5 +69,7 @@ def settle(
         if isinstance(exc, clean_failures):
             ledger.record_failure(key, exc)
         raise
+    finally:
+        _current_key.reset(token)
     ledger.record_success(key, result)
     return result

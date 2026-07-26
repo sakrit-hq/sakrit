@@ -11,7 +11,7 @@ Importing ``sakrit`` never imports a framework. Framework adapters live under
 """
 
 from sakrit.__about__ import __version__
-from sakrit.core import EffectDecl, SqliteLedger
+from sakrit.core import EffectDecl, SqliteLedger, current_key
 from sakrit.engine import Sakrit
 
-__all__ = ["EffectDecl", "Sakrit", "SqliteLedger", "__version__"]
+__all__ = ["EffectDecl", "Sakrit", "SqliteLedger", "__version__", "current_key"]

@@ -22,6 +22,7 @@ ledger/adapter split come later.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -29,7 +30,12 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 
-from sakrit.core.errors import EffectInFlightError
+from sakrit.core.errors import EffectInFlightError, SakritError
+
+try:
+    import fcntl  # POSIX advisory locking
+except ImportError:  # pragma: no cover - non-POSIX (Windows)
+    fcntl = None  # type: ignore[assignment]
 
 
 class EffectState(Enum):
@@ -93,14 +99,65 @@ CREATE INDEX IF NOT EXISTS idx_scope_state ON effects (scope, state);
 class SqliteLedger:
     """A durable, single-writer ledger backed by SQLite."""
 
-    def __init__(self, path: str | Path = ":memory:") -> None:
+    def __init__(self, path: str | Path = ":memory:", *, i_accept_data_loss: bool = False) -> None:
+        self._path = str(path)
+        self._lock_fd: int | None = None
+        # Q13 — enforce single-worker before opening: the SQLite backend is
+        # single-worker, and the guarantee depends on that being a *property*, not a
+        # hope. The kernel releases this lock on process death, however rude.
+        if self._path != ":memory:":
+            self._acquire_single_worker_lock()
         # isolation_level=None → autocommit; we drive BEGIN IMMEDIATE / COMMIT
         # ourselves so a claim is one atomic statement group.
-        self.conn = sqlite3.connect(str(path), isolation_level=None)
+        self.conn = sqlite3.connect(self._path, isolation_level=None)
+        self._configure_durability(i_accept_data_loss)  # Q12
         self.conn.executescript(_SCHEMA)
+
+    def _acquire_single_worker_lock(self) -> None:
+        if fcntl is None:  # pragma: no cover - non-POSIX; best-effort, documented
+            return
+        lock_path = self._path + ".lock"
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            os.close(fd)
+            raise SakritError(
+                f"another worker already holds {lock_path}. The SQLite backend is "
+                "single-worker (the lock is a local-filesystem flock, kernel-released "
+                "on death); use the Postgres backend to run multiple workers."
+            ) from exc
+        self._lock_fd = fd
+
+    def _configure_durability(self, i_accept_data_loss: bool) -> None:
+        # :memory: is ephemeral by nature — no durability claim to enforce.
+        if self._path == ":memory:":
+            return
+        if i_accept_data_loss:
+            self.conn.execute("PRAGMA synchronous=OFF")  # fast, unsafe — explicitly opted in
+            return
+        # WAL + FULL: durable against a process crash *and* power loss. (WAL+NORMAL
+        # is process-crash-safe but not power-loss-safe — see fault_model.)
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA synchronous=FULL")
+
+    def fault_model(self) -> str:
+        """The durability tier this ledger certifies — for docs and observability."""
+        if self._path == ":memory:":
+            return "ephemeral (:memory:) — not durable"
+        sync = self.conn.execute("PRAGMA synchronous").fetchone()[0]
+        journal = str(self.conn.execute("PRAGMA journal_mode").fetchone()[0]).upper()
+        if sync == 0:
+            return "NONE (synchronous=OFF; i_accept_data_loss)"
+        if journal == "WAL" and sync == 1:  # NORMAL
+            return "process-crash-safe (WAL+NORMAL); power-loss requires FULL"
+        return "process-and-power-crash-safe (WAL+FULL)"
 
     def close(self) -> None:
         self.conn.close()
+        if self._lock_fd is not None:
+            os.close(self._lock_fd)  # releases the flock
+            self._lock_fd = None
 
     def __enter__(self) -> SqliteLedger:
         return self

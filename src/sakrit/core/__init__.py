@@ -11,6 +11,7 @@ framework-agnostic — keep it clean.
 
 from sakrit.core.adapter import RuntimeAdapter, resolve_coordinate
 from sakrit.core.canonical import canonicalize
+from sakrit.core.context import current_key
 from sakrit.core.coordinate import Capabilities, Coordinate, Stability
 from sakrit.core.declaration import ArgClass, EffectDecl
 from sakrit.core.errors import (
@@ -45,6 +46,7 @@ __all__ = [
     "SqliteLedger",
     "Stability",
     "canonicalize",
+    "current_key",
     "fingerprint",
     "positional_key",
     "resolve_coordinate",

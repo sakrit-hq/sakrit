@@ -55,6 +55,7 @@ class Sakrit:
         self._ledger = ledger
         self._secret = secret
         self._adapter = adapter
+        self._recovered = False
 
     def guard(
         self,
@@ -69,6 +70,14 @@ class Sakrit:
         occurrence: int = 1,
     ) -> object:
         """Run ``fn`` exactly once for its logical step, or replay its saved result."""
+        # Q14 — the engine guarantees recovery runs once per process, before the
+        # first claim it issues. The Q1 fix removed claim's lazy safety net, so a
+        # crash leftover must be resolved by recovery, not left to chance or the
+        # integrator. No adapter obligation; a missed on_recovery hook is harmless.
+        if not self._recovered:
+            self._recovered = True
+            self._ledger.recover()
+
         kw = dict(kwargs or {})
         named = _bind(fn, args, kw)
         coord = resolve_coordinate(
