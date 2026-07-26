@@ -108,19 +108,35 @@ CREATE INDEX IF NOT EXISTS idx_scope_state ON effects (scope, state);
 class SqliteLedger:
     """A durable, single-writer ledger backed by SQLite."""
 
-    def __init__(self, path: str | Path = ":memory:", *, i_accept_data_loss: bool = False) -> None:
+    def __init__(
+        self,
+        path: str | Path = ":memory:",
+        *,
+        i_accept_data_loss: bool = False,
+        multi_worker: bool = False,
+        owner: str | None = None,
+    ) -> None:
         self._path = str(path)
         self._lock_fd: int | None = None
-        # Q13 — enforce single-worker before opening: the SQLite backend is
-        # single-worker, and the guarantee depends on that being a *property*, not a
-        # hope. The kernel releases this lock on process death, however rude.
-        if self._path != ":memory:":
+        self._multi_worker = multi_worker
+        self.owner = owner or f"worker-{os.getpid()}-{id(self):x}"
+        # Q13 — single-worker (default) is enforced with flock, so it's a *property*,
+        # not a hope. In multi-worker mode, leases + fencing coordinate instead, so
+        # the flock is intentionally skipped (a shared file DB, or Postgres for scale).
+        if self._path != ":memory:" and not multi_worker:
             self._acquire_single_worker_lock()
         # isolation_level=None → autocommit; we drive BEGIN IMMEDIATE / COMMIT
         # ourselves so a claim is one atomic statement group.
-        self.conn = sqlite3.connect(self._path, isolation_level=None)
+        self.conn = sqlite3.connect(self._path, isolation_level=None, check_same_thread=False)
         self._configure_durability(i_accept_data_loss)  # Q12
+        if multi_worker:
+            self.conn.execute("PRAGMA busy_timeout=5000")  # concurrent writers wait, don't error
         self.conn.executescript(_SCHEMA)
+
+    def _db_now(self) -> float:
+        """Wall-clock seconds from the DB's own clock — the single source of truth
+        for lease math (worker clock skew must not decide expiry; Q21)."""
+        return float(self.conn.execute("SELECT strftime('%s','now')").fetchone()[0])
 
     def _acquire_single_worker_lock(self) -> None:
         if fcntl is None:  # pragma: no cover - non-POSIX; best-effort, documented
@@ -353,8 +369,8 @@ class SqliteLedger:
         fingerprint: str,
         *,
         owner: str,
-        now: float,
         lease_seconds: float,
+        now: float | None = None,
         provider_dedup: bool = False,
         reconcilable: bool = False,
     ) -> Claim:
@@ -367,6 +383,8 @@ class SqliteLedger:
         surfaces ``AMBIGUOUS`` (forbidden takeover). Fencing makes a returning zombie
         harmless: its stale-token writes are rejected (see :meth:`fence`).
         """
+        if now is None:
+            now = self._db_now()  # DB clock only (Q21)
         self.conn.execute("BEGIN IMMEDIATE")
         try:
             row = self.conn.execute(
@@ -445,16 +463,21 @@ class SqliteLedger:
         carries a stale token, so its writes are rejected — it cannot corrupt a row
         it no longer owns.
         """
-        encoded = None if state is not EffectState.SUCCEEDED else json.dumps(result)
+        terminal = state in (EffectState.SUCCEEDED, EffectState.FAILED, EffectState.AMBIGUOUS)
+        encoded = json.dumps(result) if state is EffectState.SUCCEEDED else None
         cur = self.conn.execute(
             "UPDATE effects SET state = ?, result = ?, settled_at = ? "
             "WHERE key = ? AND fencing_token = ?",
-            (state.value, encoded, _now(), key, token),
+            (state.value, encoded, _now() if terminal else None, key, token),
         )
         return cur.rowcount > 0
 
-    def heartbeat(self, key: str, owner: str, now: float, lease_seconds: float) -> bool:
+    def heartbeat(
+        self, key: str, owner: str, lease_seconds: float, now: float | None = None
+    ) -> bool:
         """Extend our lease so a slow-but-alive worker is not presumed dead."""
+        if now is None:
+            now = self._db_now()
         cur = self.conn.execute(
             "UPDATE effects SET lease_expires = ? WHERE key = ? AND lease_owner = ?",
             (now + lease_seconds, key, owner),
