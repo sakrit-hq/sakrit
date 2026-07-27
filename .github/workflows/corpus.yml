@@ -15,11 +15,18 @@ on:
       - "src/sakrit/doctor.py"
       - "tests/corpus/**"
 
+permissions:
+  contents: read
+
 jobs:
   corpus:
     name: doctor is crash-free on real repos
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # m14: both steps share this clone cache, so the report step reuses the test's clones
+    # instead of re-cloning all four repos.
+    env:
+      SAKRIT_CORPUS_CACHE: ${{ runner.temp }}/corpus-cache
     steps:
       - uses: actions/checkout@v4
 
@@ -27,6 +34,7 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
+          enable-cache: true
 
       - name: Sync dependencies
         run: uv sync --locked --dev

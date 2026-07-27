@@ -20,9 +20,24 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      # No third-party action (m13: the old label-syncer is archived). Sync via the gh CLI, which
+      # is preinstalled on the runner — `gh label create --force` creates or updates each label.
       - name: Sync labels from manifest
-        uses: micnncim/action-label-syncer@v1
-        with:
-          manifest: .github/labels.yml
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import subprocess, sys
+          try:
+              import yaml
+          except ImportError:
+              subprocess.run([sys.executable, "-m", "pip", "install", "-q", "pyyaml"], check=True)
+              import yaml
+          for lbl in yaml.safe_load(open(".github/labels.yml")):
+              subprocess.run(
+                  ["gh", "label", "create", lbl["name"],
+                   "--color", lbl["color"].lstrip("#"),
+                   "--description", lbl.get("description", ""), "--force"],
+                  check=True,
+              )
+          PY

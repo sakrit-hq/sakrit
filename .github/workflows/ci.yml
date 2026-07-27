@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+# Least privilege: every job here only reads the repo.
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -21,6 +25,7 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
+          enable-cache: true
 
       - name: Sync dependencies
         run: uv sync --locked --all-extras --dev
@@ -54,6 +59,7 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           python-version: ${{ matrix.python-version }}
+          enable-cache: true
 
       - name: Sync dependencies
         run: uv sync --locked --all-extras --dev
@@ -72,6 +78,7 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
+          enable-cache: true
 
       - name: Sync dependencies
         run: uv sync --locked --all-extras --dev
@@ -93,9 +100,16 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
+          enable-cache: true
 
       - name: Sync dependencies (both framework extras)
         run: uv sync --locked --extra langgraph --extra openai-agents --dev
+
+      # m12: hard-import both frameworks so a broken transitive dep fails LOUDLY here, rather than
+      # letting importorskip turn the whole framework suite into green-with-skips (which would hide
+      # a broken adapter behind a passing job).
+      - name: Assert both frameworks import
+        run: uv run python -c "import langgraph, agents; print('frameworks import OK')"
 
       # Gates the adapters (call_site byte-stable across resume, unique per step) AND runs the
       # docs quickstarts verbatim (tests/integration/test_quickstarts.py) so the copy-paste code
