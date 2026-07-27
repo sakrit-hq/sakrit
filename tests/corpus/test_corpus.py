@@ -11,6 +11,7 @@ skips rather than failing a build on a connectivity blip.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -30,6 +31,13 @@ pytestmark = pytest.mark.corpus
 
 @pytest.fixture(scope="session")
 def _cache(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    # m14: honor SAKRIT_CORPUS_CACHE so the CI report step reuses these clones instead of
+    # re-cloning all four repos. clone_pinned is idempotent when a .git already exists.
+    shared = os.environ.get("SAKRIT_CORPUS_CACHE")
+    if shared:
+        path = Path(shared)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
     return tmp_path_factory.mktemp("sakrit-corpus")
 
 

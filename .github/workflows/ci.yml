@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch: # on-demand full macOS sweep (e.g. before a release)
+
+# Least privilege: every job here only reads the repo.
+permissions:
+  contents: read
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -21,6 +26,7 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
+          enable-cache: true
 
       - name: Sync dependencies
         run: uv sync --locked --all-extras --dev
@@ -34,30 +40,78 @@ jobs:
       - name: Mypy (types)
         run: uv run mypy
 
-  test:
-    # P0 install matrix: py3.10–3.14 × macOS/Linux. Version-specific failures are
-    # real and invisible locally (the py3.14 heartbeat bug), and the durability layer
-    # leans on POSIX flock + fsync semantics that differ across OSes — so both axes
-    # are load-bearing, not box-ticking.
-    name: unit (py${{ matrix.python-version }} · ${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+  # --- unit matrix, split to keep macOS (10× billing) economical ---------------------------
+  # The full P0 claim is py3.10–3.14 × macOS/Linux. Version-specific failures are real and invisible
+  # locally (the py3.14 heartbeat bug), and the durability layer leans on POSIX flock + fsync + the
+  # /tmp symlink + SIGKILL handling — OS-specific, but that class rarely varies by Python *minor*.
+  # So: full version range on Linux always (1×); on macOS, only the conventional edges on PRs, and
+  # the full macOS sweep on push-to-main / on demand (which backs the public "tested on …" claim).
+
+  unit-linux:
+    name: unit (py${{ matrix.python-version }} · ubuntu)
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
-
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
           python-version: ${{ matrix.python-version }}
-
+          enable-cache: true
       - name: Sync dependencies
         run: uv sync --locked --all-extras --dev
+      - name: Pytest (unit)
+        run: uv run pytest tests/unit -m "not chaos"
 
+  unit-macos-edges:
+    # PRs: only oldest + newest on macOS (2 cells, not 5). Cheap; catches the platform-specific
+    # class. The full version dimension is covered on Linux.
+    name: unit (py${{ matrix.python-version }} · macos · edges)
+    if: github.event_name == 'pull_request'
+    runs-on: macos-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+      - name: Sync dependencies
+        run: uv sync --locked --all-extras --dev
+      - name: Pytest (unit)
+        run: uv run pytest tests/unit -m "not chaos"
+
+  unit-macos-full:
+    # The full macOS × py3.10–3.14 sweep — what backs the public "tested on py3.10–3.14 × macOS/Linux"
+    # claim. On push-to-main (rare for a solo team → cheap, well-targeted) and on demand
+    # (workflow_dispatch, e.g. a pre-release sweep). NOT on a schedule — a nightly full sweep would
+    # burn 5×10× nightly for nothing and recreate the exact cost problem on a timer.
+    name: unit (py${{ matrix.python-version }} · macos · full)
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: macos-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+      - name: Sync dependencies
+        run: uv sync --locked --all-extras --dev
       - name: Pytest (unit)
         run: uv run pytest tests/unit -m "not chaos"
 
@@ -72,6 +126,7 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
+          enable-cache: true
 
       - name: Sync dependencies
         run: uv sync --locked --all-extras --dev
@@ -93,9 +148,16 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
+          enable-cache: true
 
       - name: Sync dependencies (both framework extras)
         run: uv sync --locked --extra langgraph --extra openai-agents --dev
+
+      # m12: hard-import both frameworks so a broken transitive dep fails LOUDLY here, rather than
+      # letting importorskip turn the whole framework suite into green-with-skips (which would hide
+      # a broken adapter behind a passing job).
+      - name: Assert both frameworks import
+        run: uv run python -c "import langgraph, agents; print('frameworks import OK')"
 
       # Gates the adapters (call_site byte-stable across resume, unique per step) AND runs the
       # docs quickstarts verbatim (tests/integration/test_quickstarts.py) so the copy-paste code

@@ -28,6 +28,7 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
+          enable-cache: true
       - name: Sync docs deps
         run: uv sync --locked --group docs
       - name: Build (strict — broken links fail)

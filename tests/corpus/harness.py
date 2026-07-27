@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -148,7 +149,9 @@ def render_markdown(reports: list[RepoReport]) -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Run the doctor over the pinned OSS corpus.")
-    ap.add_argument("--cache", type=Path, default=Path("/tmp/sakrit-corpus-cache"))
+    # m14: default to SAKRIT_CORPUS_CACHE so this reuses the pytest step's clones in CI.
+    default_cache = os.environ.get("SAKRIT_CORPUS_CACHE", "/tmp/sakrit-corpus-cache")
+    ap.add_argument("--cache", type=Path, default=Path(default_cache))
     ap.add_argument("--json", action="store_true", help="emit JSON instead of Markdown")
     args = ap.parse_args()
     try:

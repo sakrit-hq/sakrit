@@ -33,7 +33,8 @@ It's a single static file — deploy `landing/` anywhere:
 ## Notes
 
 - No analytics, no trackers, no external JS — consistent with Sakrit's no-telemetry posture (the page
-   loads only Google Fonts). Swap to self-hosted fonts if you want zero third-party requests.
+   makes **zero third-party requests** — the fonts are self-hosted (latin-subset woff2 under
+   `fonts/`, wired via `fonts.css`), so a page that says "no telemetry" doesn't itself phone out).
 - Respects `prefers-reduced-motion`.
 - The receipt figures match the real demo (`examples/money_agent/`): order #4471, $49.99, naive → 2
   charges, guarded → 1.

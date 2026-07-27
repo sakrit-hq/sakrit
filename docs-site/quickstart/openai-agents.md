@@ -12,7 +12,8 @@ pip install "sakrit[openai-agents]"
 ## The integration you write
 
 Two pieces: an `OpenAIAgentsAdapter` on the engine, and a `tool_boundary(ctx, scope=<run id>)` around
-the guarded call.
+the guarded call. The sketch below shows the shape; the **exact, tested** version is the full script
+embedded further down (it can't drift — CI runs it).
 
 ```python
 sk = Sakrit(SqliteLedger("sakrit.db"), secret=b"<secret>", adapter=OpenAIAgentsAdapter())
