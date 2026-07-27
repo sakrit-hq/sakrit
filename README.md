@@ -80,15 +80,32 @@ def send_email(to: str, subject: str, body: str) -> str:
 ```python
 sk = Sakrit(SqliteLedger("sakrit.db"), secret=b"<per-deployment-secret>")
 
-
-@sk.effect(EffectDecl("payment.charge", {"customer": ArgClass.IDENTITY, "amount": ArgClass.IDENTITY}),
-           key="order-4471-charge")   # this charge's identity
-def charge_card(customer: str, amount: int) -> dict:
-    return stripe.PaymentIntent.create(customer=customer, amount=amount)
+CHARGE = EffectDecl("payment.charge", {"customer": ArgClass.IDENTITY, "amount_cents": ArgClass.IDENTITY})
 
 
-charge_card(customer="cus_8815", amount=4999)   # charges exactly once, across any retry
+def charge_card(customer: str, amount_cents: int) -> dict:
+    return stripe.PaymentIntent.create(customer=customer, amount=amount_cents)  # Stripe amounts are in cents
+
+
+order_id = "4471"  # from your domain — the order this charge settles
+
+# `key` names the intent — one per logical charge, supplied per call. Crash/retry of the
+# same order dedups; a different order gets a different key and charges.
+sk.guard(CHARGE, charge_card, kwargs={"customer": "cus_8815", "amount_cents": 4999},  # $49.99
+         key=f"order-{order_id}-charge")
 ```
+
+> **Where does the `key` come from?** It names the *intent*, so it's derived from your **domain**
+> (`f"order-{order_id}-charge"`) — never from the call's arguments, and never a payload hash. That's
+> what makes repeats correct in both directions: the *same* order retried (crash, timeout, an agent
+> re-running the step) reuses the key and dedups; a genuinely *new* charge has a new order and a new
+> key, so it fires — **even if the arguments are byte-identical** (`cus_8815` buying the same item
+> twice is two orders → two keys → two charges; a payload-hash key would silently swallow the second
+> one). The `IDENTITY` args don't *set* the key — they **verify** it: if a call arrives under an
+> existing key with a different `amount_cents`, that's not a retry, and Sakrit raises `DivergentRetry`
+> instead of charging again or replaying the old result. *Key = which intent; identity args = proof
+> it's that intent.* (Same model as Stripe idempotency keys — caller-supplied per operation, never a
+> payload hash.)
 
 > **The sequential-repeat trap.** Calling the *same* guarded tool again at the *same*
 > call site with the *same* identity args (e.g. deliberately sending one reminder twice)
