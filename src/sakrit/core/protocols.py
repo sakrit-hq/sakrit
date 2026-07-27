@@ -54,6 +54,7 @@ class Ledger(Protocol):
         provider_dedup: bool = False,
         provider_ttl_s: float | None = None,
         reconcilable: bool = False,
+        secret_id: str | None = None,
     ) -> Claim: ...
 
     def mark_executing(self, key: str) -> None: ...
@@ -104,6 +105,7 @@ class LeasedLedger(Ledger, Protocol):
         provider_dedup: bool = False,
         provider_ttl_s: float | None = None,
         reconcilable: bool = False,
+        secret_id: str | None = None,
     ) -> Claim: ...
 
     def fence(self, key: str, token: int, state: EffectState, *, result: object = None) -> bool: ...

@@ -20,6 +20,10 @@ from sakrit.core.coordinate import Coordinate
 # Bumped if the derivation ever changes, so old and new keys never silently alias.
 _KEY_SCHEME = b"sakrit-key-v3"
 
+# The scheme id lifted out of the hash input onto the ledger row (P5-3), so a mixed-scheme
+# ledger is *detectable* rather than silently orphaning. Must track ``_KEY_SCHEME``.
+KEY_VERSION = "v3"
+
 
 def positional_key(coord: Coordinate, tool: str) -> str:
     """Derive the stable, unique key for a logical step of a run.

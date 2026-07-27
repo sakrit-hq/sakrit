@@ -40,6 +40,7 @@ def _decide(
     provider_key_param: str | None,
     provider_ttl_s: float | None,
     reconcilable: bool,
+    secret_id: str | None,
 ) -> object:
     """Claim the key and decide: return a replayed result, raise on ambiguity, or
     return ``_PROCEED`` to signal 'we own it — dispatch'. Shared by sync and async."""
@@ -51,6 +52,7 @@ def _decide(
         provider_dedup=provider_key_param is not None,
         provider_ttl_s=provider_ttl_s,
         reconcilable=reconcilable,
+        secret_id=secret_id,
     )
     if claim.kind is ClaimKind.REPLAY:
         if claim.fingerprint != fingerprint:
@@ -85,6 +87,7 @@ def settle(
     provider_ttl_s: float | None = None,
     clean_failures: tuple[type[BaseException], ...] = (),
     reconcilable: bool = False,
+    secret_id: str | None = None,
 ) -> object:
     """Run ``fn`` exactly once for ``key`` (durably), or return its saved result.
 
@@ -92,6 +95,9 @@ def settle(
     recovery re-dispatches instead of surfacing ambiguity. The tool reads the key to
     hand its provider via ``sakrit.current_key()`` — a contextvar set here for the
     duration of the dispatch, so the tool's signature stays clean.
+
+    ``secret_id`` is stamped on the row as provenance (P5-3) — which HMAC secret signed
+    this fingerprint, for a future rotation window.
     """
     decided = _decide(
         ledger,
@@ -102,6 +108,7 @@ def settle(
         provider_key_param=provider_key_param,
         provider_ttl_s=provider_ttl_s,
         reconcilable=reconcilable,
+        secret_id=secret_id,
     )
     if decided is not _PROCEED:
         return decided
@@ -155,6 +162,7 @@ async def settle_async(
     provider_ttl_s: float | None = None,
     clean_failures: tuple[type[BaseException], ...] = (),
     reconcilable: bool = False,
+    secret_id: str | None = None,
 ) -> object:
     """Await ``fn`` exactly once for ``key`` (durably), or return its saved result.
 
@@ -171,6 +179,7 @@ async def settle_async(
         provider_key_param=provider_key_param,
         provider_ttl_s=provider_ttl_s,
         reconcilable=reconcilable,
+        secret_id=secret_id,
     )
     if decided is not _PROCEED:
         return decided

@@ -23,7 +23,7 @@ from typing import Any, TypeVar
 from sakrit.core.adapter import RuntimeAdapter, resolve_coordinate
 from sakrit.core.declaration import EffectDecl
 from sakrit.core.errors import SakritError
-from sakrit.core.fingerprint import fingerprint
+from sakrit.core.fingerprint import fingerprint, secret_id
 from sakrit.core.keys import positional_key
 from sakrit.core.leased import settle_leased, settle_leased_async
 from sakrit.core.protocols import LeasedLedger
@@ -124,6 +124,10 @@ class Sakrit:
     ) -> None:
         self._ledger = ledger
         self._secret = secret
+        # P5-3: a stable, non-reversible id for this deployment's HMAC secret, stamped on
+        # every row we claim so a *rotation* is detectable (the precondition for a dual-secret
+        # verify window instead of a fleet-wide DivergentRetry storm). Computed once.
+        self._secret_id = secret_id(secret)
         self._adapter = adapter
         self._recovered = False
         self._registry: dict[str, EffectDecl] = {}  # tool identity → decl (for reconcile)
@@ -232,6 +236,7 @@ class Sakrit:
                 on_absent=decl.on_absent,
                 lease_seconds=self._lease_seconds,
                 wait_timeout=self._wait_timeout,
+                secret_id=self._secret_id,
             )
         return settle(
             self._ledger,
@@ -246,6 +251,7 @@ class Sakrit:
             provider_ttl_s=decl.provider_ttl_s,
             clean_failures=decl.clean_failures,
             reconcilable=decl.reconcile is not None,
+            secret_id=self._secret_id,
         )
 
     async def guard_async(
@@ -288,6 +294,7 @@ class Sakrit:
                 on_absent=decl.on_absent,
                 lease_seconds=self._lease_seconds,
                 wait_timeout=self._wait_timeout,
+                secret_id=self._secret_id,
             )
         return await settle_async(
             self._ledger,
@@ -302,6 +309,7 @@ class Sakrit:
             provider_ttl_s=decl.provider_ttl_s,
             clean_failures=decl.clean_failures,
             reconcilable=decl.reconcile is not None,
+            secret_id=self._secret_id,
         )
 
     def recover(self) -> None:

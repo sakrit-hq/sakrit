@@ -37,7 +37,14 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 
-from sakrit.core.errors import DivergentRetry, EffectInFlightError, SakritError
+from sakrit.core.errors import (
+    DivergentRetry,
+    EffectInFlightError,
+    SakritError,
+    SchemeMismatch,
+)
+from sakrit.core.fingerprint import FINGERPRINT_VERSION
+from sakrit.core.keys import KEY_VERSION
 from sakrit.core.seams import seam
 
 logger = logging.getLogger("sakrit")
@@ -111,26 +118,39 @@ def _within_ttl(created_at: str, ttl_s: float | None) -> bool:
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS effects (
-  key            TEXT PRIMARY KEY,
-  scope          TEXT NOT NULL,
-  tool           TEXT NOT NULL,
-  fingerprint    TEXT NOT NULL,
-  state          TEXT NOT NULL,
-  provider_dedup INTEGER NOT NULL DEFAULT 0,
-  provider_ttl_s REAL,
-  reconcilable   INTEGER NOT NULL DEFAULT 0,
-  result         TEXT,
-  result_ref     TEXT,
-  error          TEXT,
-  created_at     TEXT NOT NULL,
-  settled_at     TEXT,
-  fencing_token  INTEGER NOT NULL DEFAULT 0,
-  lease_owner    TEXT,
-  lease_expires  REAL,
-  resolved_by    TEXT
+  key                 TEXT PRIMARY KEY,
+  scope               TEXT NOT NULL,
+  tool                TEXT NOT NULL,
+  fingerprint         TEXT NOT NULL,
+  state               TEXT NOT NULL,
+  provider_dedup      INTEGER NOT NULL DEFAULT 0,
+  provider_ttl_s      REAL,
+  reconcilable        INTEGER NOT NULL DEFAULT 0,
+  result              TEXT,
+  result_ref          TEXT,
+  error               TEXT,
+  created_at          TEXT NOT NULL,
+  settled_at          TEXT,
+  fencing_token       INTEGER NOT NULL DEFAULT 0,
+  lease_owner         TEXT,
+  lease_expires       REAL,
+  resolved_by         TEXT,
+  key_version         TEXT,
+  fingerprint_version TEXT,
+  secret_id           TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_scope_state ON effects (scope, state);
+CREATE TABLE IF NOT EXISTS sakrit_meta (
+  k TEXT PRIMARY KEY,
+  v TEXT NOT NULL
+);
 """
+
+# P5-3: the on-disk ledger format version, recorded in ``sakrit_meta`` so a future migration can
+# branch on what it finds instead of guessing, and so a *newer*-than-we-understand ledger is
+# refused rather than silently misread. Bump only for a real on-disk format change. (Distinct
+# from ``user_version``, which stamps the coordination *mode* — an orthogonal axis, T7/P3-3.)
+_SCHEMA_VERSION = 1
 
 
 # Coordination-mode stamp, written to the SQLite header (PRAGMA user_version). 0 means
@@ -216,7 +236,9 @@ class SqliteLedger:
             self.conn.execute("PRAGMA busy_timeout=5000")
         self._configure_durability(i_accept_data_loss)  # Q12
         self.conn.executescript(_SCHEMA)
+        self._migrate_effects_columns()  # P5-3: add provenance columns to a pre-P5-3 table
         self._enforce_mode_stamp(multi_worker)
+        self._enforce_schema_version()  # P5-3
 
     def _enforce_mode_stamp(self, multi_worker: bool) -> None:
         """Stamp the database with its coordination mode and refuse a mismatched open
@@ -234,6 +256,68 @@ class SqliteLedger:
             raise SakritError(
                 f"ledger at {self._path!r} was created in {have} mode; refusing to open it "
                 f"{need}. The fenced and unfenced protocols must not share a database."
+            )
+
+    def _migrate_effects_columns(self) -> None:
+        """Add the P5-3 provenance columns to a pre-existing ``effects`` table. ``CREATE TABLE
+        IF NOT EXISTS`` builds a *fresh* table with every column, but silently leaves an
+        already-existing (pre-P5-3) table untouched — so opening an old file would then fail on
+        ``SELECT key_version`` with 'no such column'. Add each missing column in place; the
+        rows come back NULL, which the scheme check reads as 'unknown provenance', never a false
+        mismatch. Cheap and idempotent (ADD COLUMN only what ``table_info`` shows is missing)."""
+        have = {r[1] for r in self.conn.execute("PRAGMA table_info(effects)").fetchall()}
+        for col in ("key_version", "fingerprint_version", "secret_id"):
+            if col not in have:
+                try:
+                    self.conn.execute(f"ALTER TABLE effects ADD COLUMN {col} TEXT")
+                except sqlite3.OperationalError as exc:
+                    # A peer upgrading the same legacy file concurrently may have added it
+                    # between our table_info read and here — a benign race (idempotent add).
+                    if "duplicate column" not in str(exc).lower():
+                        raise
+
+    def _enforce_schema_version(self) -> None:
+        """Record the on-disk format version, and refuse a ledger written by a *newer* Sakrit
+        than this one (P5-3). A newer build may store rows this code cannot correctly read;
+        misreading them silently is the failure this stamp exists to prevent. An older/absent
+        stamp is adopted (fresh DB, or a legacy pre-P5-3 file — its rows carry NULL provenance,
+        which the scheme check treats as 'unknown', never a false mismatch)."""
+        row = self.conn.execute("SELECT v FROM sakrit_meta WHERE k = 'schema_version'").fetchone()
+        if row is None:
+            self.conn.execute(
+                "INSERT INTO sakrit_meta (k, v) VALUES ('schema_version', ?)",
+                (str(_SCHEMA_VERSION),),
+            )
+            return
+        on_disk = int(row[0])
+        if on_disk > _SCHEMA_VERSION:
+            raise SakritError(
+                f"ledger at {self._path!r} has schema_version {on_disk}, newer than this "
+                f"Sakrit understands ({_SCHEMA_VERSION}). Upgrade Sakrit, or open it with the "
+                "build that wrote it — refusing to risk misreading a newer on-disk format."
+            )
+        # on_disk < _SCHEMA_VERSION would be where an in-place migration runs; none exists yet
+        # (v1 is the first stamped version), so there is nothing to upgrade.
+
+    @staticmethod
+    def _check_scheme(key_version: str | None, fingerprint_version: str | None) -> None:
+        """Refuse to operate on a stored row produced under a *different* key/fingerprint
+        scheme than the running code (P5-3). ``None`` = a legacy pre-stamp row (unknown
+        provenance) — we cannot prove a mismatch, so we do not manufacture one. A non-NULL
+        version that disagrees is a hard :class:`SchemeMismatch`: comparing a fingerprint (or
+        re-owning a key) across schemes is unsound, and detecting it here turns a silent
+        ``DivergentRetry`` storm into one clear, actionable error."""
+        if key_version is not None and key_version != KEY_VERSION:
+            raise SchemeMismatch(
+                f"stored row was keyed under scheme {key_version!r}, but this build uses "
+                f"{KEY_VERSION!r} — a mixed-scheme ledger. Drain in-flight runs or migrate "
+                "explicitly; never compare keys across schemes."
+            )
+        if fingerprint_version is not None and fingerprint_version != FINGERPRINT_VERSION:
+            raise SchemeMismatch(
+                f"stored row was fingerprinted under scheme {fingerprint_version!r}, but this "
+                f"build uses {FINGERPRINT_VERSION!r} — the fingerprints are incomparable. Drain "
+                "in-flight runs or migrate explicitly; never compare fingerprints across schemes."
             )
 
     @property
@@ -388,13 +472,15 @@ class SqliteLedger:
         provider_dedup: bool = False,
         provider_ttl_s: float | None = None,
         reconcilable: bool = False,
+        secret_id: str | None = None,
     ) -> Claim:
         """Atomically decide what to do with ``key`` and take ownership if we run it."""
         self._bind_claim_thread()  # V-3
         self.conn.execute("BEGIN IMMEDIATE")
         try:
             row = self.conn.execute(
-                "SELECT state, result, fingerprint, result_ref FROM effects WHERE key = ?",
+                "SELECT state, result, fingerprint, result_ref, key_version, fingerprint_version "
+                "FROM effects WHERE key = ?",
                 (key,),
             ).fetchone()
 
@@ -402,7 +488,8 @@ class SqliteLedger:
                 self.conn.execute(
                     "INSERT INTO effects "
                     "(key, scope, tool, fingerprint, state, provider_dedup, provider_ttl_s, "
-                    "reconcilable, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "reconcilable, created_at, key_version, fingerprint_version, secret_id) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         key,
                         scope,
@@ -413,11 +500,15 @@ class SqliteLedger:
                         provider_ttl_s,
                         int(reconcilable),
                         _now(),
+                        KEY_VERSION,  # P5-3: row provenance — the scheme this row was made under
+                        FINGERPRINT_VERSION,
+                        secret_id,
                     ),
                 )
                 claim = Claim(ClaimKind.PROCEED)
 
             else:
+                self._check_scheme(row[4], row[5])  # P5-3: never operate across schemes
                 state = EffectState(row[0])
                 if state is EffectState.SUCCEEDED:
                     result: object
@@ -442,10 +533,19 @@ class SqliteLedger:
                 else:
                     # Re-own and retry: INTENDED (recovery blessed a crash-before-dispatch
                     # leftover) or a declared-clean FAILED — the effect provably never
-                    # completed. Fresh fingerprint for the retry.
+                    # completed. Fresh fingerprint for the retry, re-stamped with the current
+                    # scheme provenance (P5-3): this attempt is being made by *this* build.
                     self.conn.execute(
-                        "UPDATE effects SET state = ?, fingerprint = ? WHERE key = ?",
-                        (EffectState.CLAIMED.value, fingerprint, key),
+                        "UPDATE effects SET state = ?, fingerprint = ?, key_version = ?, "
+                        "fingerprint_version = ?, secret_id = ? WHERE key = ?",
+                        (
+                            EffectState.CLAIMED.value,
+                            fingerprint,
+                            KEY_VERSION,
+                            FINGERPRINT_VERSION,
+                            secret_id,
+                            key,
+                        ),
                     )
                     claim = Claim(ClaimKind.PROCEED)
 
@@ -629,6 +729,7 @@ class SqliteLedger:
         provider_dedup: bool = False,
         provider_ttl_s: float | None = None,
         reconcilable: bool = False,
+        secret_id: str | None = None,
     ) -> Claim:
         """Atomic lease-based claim (multi-worker).
 
@@ -648,7 +749,8 @@ class SqliteLedger:
         try:
             row = self.conn.execute(
                 "SELECT state, result, fingerprint, result_ref, fencing_token, lease_owner, "
-                "lease_expires, created_at, provider_ttl_s FROM effects WHERE key = ?",
+                "lease_expires, created_at, provider_ttl_s, key_version, fingerprint_version "
+                "FROM effects WHERE key = ?",
                 (key,),
             ).fetchone()
             if row is None:
@@ -656,7 +758,8 @@ class SqliteLedger:
                 self.conn.execute(
                     "INSERT INTO effects (key, scope, tool, fingerprint, state, provider_dedup, "
                     "provider_ttl_s, reconcilable, created_at, fencing_token, lease_owner, "
-                    "lease_expires) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "lease_expires, key_version, fingerprint_version, secret_id) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         key,
                         scope,
@@ -670,10 +773,14 @@ class SqliteLedger:
                         token,
                         owner,
                         now + lease_seconds,
+                        KEY_VERSION,  # P5-3: row provenance
+                        FINGERPRINT_VERSION,
+                        secret_id,
                     ),
                 )
                 claim = Claim(ClaimKind.PROCEED, fencing_token=token)
             else:
+                self._check_scheme(row[9], row[10])  # P5-3: never take over across schemes
                 state = EffectState(row[0])
                 token, lease_owner, lease_expires = row[4], row[5], row[6]
                 created_at, row_ttl_s = row[7], row[8]
@@ -752,17 +859,24 @@ class SqliteLedger:
                     claim = Claim(kind, fencing_token=new_token)
                 else:
                     # CLAIMED (crash *before* dispatch) / INTENDED / FAILED — nothing ran.
-                    # Re-own to CLAIMED with a fresh fingerprint and PROCEED.
+                    # Re-own to CLAIMED with a fresh fingerprint and PROCEED, re-stamped with
+                    # this build's scheme provenance (P5-3) since this attempt is ours. (The
+                    # EXECUTING V-5 preserve path deliberately does NOT re-stamp — it preserves
+                    # the original executor's evidence untouched.)
                     new_token = token + 1
                     self.conn.execute(
                         "UPDATE effects SET state = ?, fingerprint = ?, fencing_token = ?, "
-                        "lease_owner = ?, lease_expires = ? WHERE key = ?",
+                        "lease_owner = ?, lease_expires = ?, key_version = ?, "
+                        "fingerprint_version = ?, secret_id = ? WHERE key = ?",
                         (
                             EffectState.CLAIMED.value,
                             fingerprint,
                             new_token,
                             owner,
                             now + lease_seconds,
+                            KEY_VERSION,
+                            FINGERPRINT_VERSION,
+                            secret_id,
                             key,
                         ),
                     )

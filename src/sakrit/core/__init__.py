@@ -22,6 +22,7 @@ from sakrit.core.errors import (
     NoCoordinateError,
     RegeneratedDuplicate,
     SakritError,
+    SchemeMismatch,
 )
 from sakrit.core.fingerprint import fingerprint
 from sakrit.core.keys import positional_key
@@ -50,6 +51,7 @@ __all__ = [
     "ReservedAdapter",
     "RuntimeAdapter",
     "SakritError",
+    "SchemeMismatch",
     "SqliteLedger",
     "Stability",
     "Verdict",

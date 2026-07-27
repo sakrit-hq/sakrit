@@ -56,6 +56,19 @@ class EffectInFlightError(SakritError):
     """
 
 
+class SchemeMismatch(SakritError):
+    """A stored row was produced under a different key/fingerprint scheme than the
+    running code (P5-3).
+
+    The row's ``key_version`` / ``fingerprint_version`` provenance does not match this
+    build's scheme. Comparing fingerprints across schemes is unsound — a scheme change makes
+    the two incomparable, which would otherwise surface as a silent :class:`DivergentRetry`
+    storm with no way to tell "different action" from "different scheme". So we refuse loudly
+    and name the mismatch instead: drain the in-flight runs, or run an explicit migration —
+    never compare across schemes. See ``docs/dev-notes/ledger-versioning.md``.
+    """
+
+
 class CanonicalizationError(SakritError):
     """An argument value has no defined canonical form.
 

@@ -168,6 +168,7 @@ def settle_leased(
     heartbeat_interval: float | None = None,
     wait_timeout: float = 30.0,
     poll: float = 0.01,
+    secret_id: str | None = None,
 ) -> object:
     """Run ``fn`` exactly once for ``key`` across concurrent workers, or return the
     winner's recorded result.
@@ -176,7 +177,9 @@ def settle_leased(
     when this worker takes over a row a presumed-dead owner left *in flight*, it asks
     the provider "did it happen?" before acting — adopting the record on ``SETTLED``,
     re-dispatching only on ``ABSENT`` + ``on_absent="retry"``, else surfacing. Without
-    it, a reconcilable takeover cannot prove the effect didn't land, so it surfaces."""
+    it, a reconcilable takeover cannot prove the effect didn't land, so it surfaces.
+
+    ``secret_id`` is stamped on the row as provenance (P5-3)."""
     deadline = time.time() + wait_timeout
     while True:
         claim = ledger.claim_leased(
@@ -189,6 +192,7 @@ def settle_leased(
             provider_dedup=provider_key_param is not None,
             provider_ttl_s=provider_ttl_s,
             reconcilable=reconcilable,
+            secret_id=secret_id,
         )
 
         if claim.kind is ClaimKind.REPLAY:
@@ -333,13 +337,15 @@ async def settle_leased_async(
     heartbeat_interval: float | None = None,
     wait_timeout: float = 30.0,
     poll: float = 0.01,
+    secret_id: str | None = None,
 ) -> object:
     """Await an async ``fn`` exactly once for ``key`` across concurrent workers, or return
     the winner's recorded result. The async twin of :func:`settle_leased`: identical
     lease/fence/takeover protocol, but the effect is **awaited**, and the BUSY wait and the
     heartbeat run on the event loop (``asyncio.sleep`` / an asyncio task) rather than a
     thread — so the SQLite connection stays on one thread. The effect is awaited *before*
-    the record, so SUCCEEDED is never written before it runs."""
+    the record, so SUCCEEDED is never written before it runs. ``secret_id`` is stamped on the
+    row as provenance (P5-3)."""
     deadline = time.time() + wait_timeout
     while True:
         claim = ledger.claim_leased(
@@ -352,6 +358,7 @@ async def settle_leased_async(
             provider_dedup=provider_key_param is not None,
             provider_ttl_s=provider_ttl_s,
             reconcilable=reconcilable,
+            secret_id=secret_id,
         )
 
         if claim.kind is ClaimKind.REPLAY:
