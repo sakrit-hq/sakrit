@@ -33,3 +33,6 @@ research/
 
 # MkDocs build output (docs source is docs-site/, tracked)
 site/
+
+# Claude Code local tooling (agents, settings) — not shipped
+.claude/
