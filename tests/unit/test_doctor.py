@@ -5,11 +5,21 @@ build with findings. Plus the precision edges: import tracking (an unrelated
 ``post()`` is NOT flagged), the passed-to-guard idiom, chained SMTP, write-vs-read
 SQL, and the fail-closed parse-failure finding."""
 
+import json
 from pathlib import Path
+
+import pytest
 
 import sakrit
 from sakrit.cli import main
-from sakrit.doctor import PARSE_FAILURE, UNGUARDED_CALL, scan_paths, scan_source
+from sakrit.doctor import (
+    PARSE_FAILURE,
+    UNGUARDED_CALL,
+    findings_to_json,
+    findings_to_sarif,
+    scan_paths,
+    scan_source,
+)
 
 
 def _codes(src: str) -> list[str]:
@@ -252,6 +262,47 @@ def test_nonexistent_path_is_a_loud_finding(tmp_path: Path) -> None:
     assert main(["doctor", "--check", str(tmp_path / "no-such-dir")]) == 1
 
 
+def test_null_byte_source_is_a_loud_finding_not_a_crash() -> None:
+    # Corpus-hardening: ast.parse raises ValueError (not SyntaxError) on null bytes.
+    # It must surface as a loud SAKRIT000, never an escaped exception.
+    findings = scan_source("x = 1\x00\n", "weird.py")
+    assert [f.code for f in findings] == [PARSE_FAILURE]
+    assert "NOT verified" in findings[0].message
+
+
+def test_deeply_nested_source_is_a_loud_finding_not_a_crash() -> None:
+    # F-4.2: a pathologically deep expression exhausts the visitor's stack. ast.parse survives;
+    # the recursive scan must degrade to SAKRIT000, never let RecursionError escape the CLI.
+    deep = "x = " + "1+" * 20000 + "1\n"
+    findings = scan_source(deep, "generated.py")
+    assert [f.code for f in findings] == [PARSE_FAILURE]
+    assert "deeply nested" in findings[0].message
+
+
+def test_existing_root_with_no_python_is_fail_closed(tmp_path: Path) -> None:
+    # F-4.3: an existing dir with no .py files (an emptied path after a rename) must not read as
+    # "scanned clean" — same threat as a typo'd path. Loud SAKRIT000; --check fails.
+    (tmp_path / "notes.txt").write_text("no python here")
+    findings, scanned = scan_paths([tmp_path])
+    assert scanned == 0
+    assert [f.code for f in findings] == [PARSE_FAILURE]
+    assert main(["doctor", "--check", str(tmp_path)]) == 1
+
+
+def test_o_write_failure_exits_2_not_1(tmp_path: Path) -> None:
+    # F-4.1: a failed -o write must not masquerade as exit 1 (findings). It's a usage error → 2.
+    dirty = tmp_path / "dirty.py"
+    dirty.write_text("import requests\nrequests.post('https://x')\n")
+    unwritable = tmp_path / "nonexistent-dir" / "out.json"  # parent doesn't exist
+    assert main(["doctor", "--format", "json", "-o", str(unwritable), str(dirty)]) == 2
+
+
+def test_scanned_code_syntaxwarning_does_not_leak(capsys: pytest.CaptureFixture[str]) -> None:
+    # A legacy invalid escape in the *scanned* code must not spew a SyntaxWarning from the doctor.
+    scan_source("import re\n\ndef f():\n    return re.match('\\d', 'x')\n", "legacy.py")
+    assert "SyntaxWarning" not in capsys.readouterr().err
+
+
 def test_own_tree_is_doctor_clean() -> None:
     # Dogfood: Sakrit's own source stays doctor-clean (ledger.py carries the reviewed
     # `# sakrit: safe-file` opt-out — its write SQL IS the guard). A new finding here
@@ -292,3 +343,120 @@ def test_cli_scans_directories_and_skips_hidden(tmp_path: Path) -> None:
     findings, scanned = scan_paths([tmp_path])
     assert scanned == 1  # the .venv file was skipped
     assert len(findings) == 1
+
+
+# --- machine-readable output formats (frozen shapes) ---------------------------------
+def test_json_envelope_shape() -> None:
+    src = "import requests\n\ndef f(u):\n    return requests.post(u)\n"
+    findings = scan_source(src, "app/notify.py")
+    doc = findings_to_json(findings, files_scanned=1, version="9.9.9")
+
+    assert doc["schema"] == "sakrit.doctor/1"
+    assert doc["tool"] == {"name": "sakrit doctor", "version": "9.9.9"}
+    assert doc["summary"] == {"files_scanned": 1, "findings": 1}
+    (only,) = doc["findings"]
+    assert only["code"] == UNGUARDED_CALL
+    assert only["severity"] == "warning"
+    assert only["path"] == "app/notify.py"
+    assert only["line"] == 4 and only["col"] == 11  # 0-based col, matches render()
+    assert "requests.post" in only["message"]
+
+
+def test_json_severity_error_for_parse_failure(tmp_path: Path) -> None:
+    bad = tmp_path / "broken.py"
+    bad.write_text("def (:\n")  # syntax error → SAKRIT000
+    findings, scanned = scan_paths([bad])
+    doc = findings_to_json(findings, scanned, version="1.0.0")
+    assert doc["findings"][0]["code"] == PARSE_FAILURE
+    assert doc["findings"][0]["severity"] == "error"
+
+
+def test_sarif_is_valid_211_shape() -> None:
+    src = "import requests\n\ndef f(u):\n    return requests.post(u)\n"
+    findings = scan_source(src, "app/notify.py")
+    doc = findings_to_sarif(findings, version="9.9.9")
+
+    assert doc["version"] == "2.1.0"
+    assert doc["$schema"].endswith("sarif-2.1.0.json")
+    (run,) = doc["runs"]
+    driver = run["tool"]["driver"]
+    assert driver["name"] == "sakrit-doctor"
+    assert driver["version"] == "9.9.9"
+    # Full rule catalog is always present, even with results present.
+    assert {r["id"] for r in driver["rules"]} == {PARSE_FAILURE, UNGUARDED_CALL}
+    (result,) = run["results"]
+    assert result["ruleId"] == UNGUARDED_CALL
+    assert result["level"] == "warning"
+    region = result["locations"][0]["physicalLocation"]["region"]
+    assert region["startLine"] == 4
+    assert region["startColumn"] == 12  # SARIF is 1-based: col(11) + 1
+    assert result["ruleIndex"] == [r["id"] for r in driver["rules"]].index(UNGUARDED_CALL)
+
+
+def test_sarif_relativizes_absolute_paths_under_cwd() -> None:
+    # F-5: an absolute path under cwd (the common $GITHUB_WORKSPACE/src CI habit) must be
+    # relativized so GitHub code scanning can map the alert to a repo file.
+    abs_path = str(Path.cwd() / "pkg" / "notify.py")
+    findings = scan_source("import requests\nrequests.post(u)\n", abs_path)
+    findings = [f for f in findings if f.code == UNGUARDED_CALL]
+    doc = findings_to_sarif(findings, version="1.0.0")
+    loc = doc["runs"][0]["results"][0]["locations"][0]["physicalLocation"]
+    assert loc["artifactLocation"]["uri"] == "pkg/notify.py"  # relative, forward-slash
+    # JSON path relativizes too.
+    jdoc = findings_to_json(findings, 1, version="1.0.0")
+    assert jdoc["findings"][0]["path"] == "pkg/notify.py"
+
+
+def test_sarif_partial_fingerprint_is_stable_across_line_moves() -> None:
+    # F-6: the alert fingerprint must not change when the same finding merely shifts lines, or
+    # GitHub closes+reopens the alert. Same call at a different line → same fingerprint.
+    a = scan_source("import requests\nrequests.post(u)\n", "a.py")
+    b = scan_source("import requests\n\n\n\nrequests.post(u)\n", "a.py")  # same call, moved down
+    fa = findings_to_sarif([f for f in a if f.code == UNGUARDED_CALL], version="1.0.0")
+    fb = findings_to_sarif([f for f in b if f.code == UNGUARDED_CALL], version="1.0.0")
+    fp_a = fa["runs"][0]["results"][0]["partialFingerprints"]["sakritFindingV1"]
+    fp_b = fb["runs"][0]["results"][0]["partialFingerprints"]["sakritFindingV1"]
+    assert fp_a == fp_b and len(fp_a) == 16
+
+
+def test_cli_sarif_with_check_exits_1_on_findings(tmp_path: Path) -> None:
+    # m5: --check applies to sarif output too (only json was covered before).
+    dirty = tmp_path / "dirty.py"
+    dirty.write_text("import requests\nrequests.post('https://x')\n")
+    assert main(["doctor", "--format", "sarif", str(dirty)]) == 0  # report mode
+    assert main(["doctor", "--format", "sarif", "--check", str(dirty)]) == 1  # gate fails
+
+
+def test_sarif_emits_catalog_even_with_zero_findings() -> None:
+    doc = findings_to_sarif([], version="1.0.0")
+    run = doc["runs"][0]
+    assert run["results"] == []
+    assert len(run["tool"]["driver"]["rules"]) == 2  # ruleset always declared
+
+
+def test_cli_json_output_is_parseable_and_check_orthogonal(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    dirty = tmp_path / "dirty.py"
+    dirty.write_text("import requests\nrequests.post('https://x')\n")
+
+    # Report mode: exits 0 even with findings; stdout is a single valid JSON document.
+    assert main(["doctor", "--format", "json", str(dirty)]) == 0
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["schema"] == "sakrit.doctor/1"
+    assert doc["summary"]["findings"] == 1
+
+    # --check flips only the exit code; the format is unchanged.
+    assert main(["doctor", "--format", "json", "--check", str(dirty)]) == 1
+    assert json.loads(capsys.readouterr().out)["summary"]["findings"] == 1
+
+
+def test_cli_sarif_written_to_file(tmp_path: Path) -> None:
+    dirty = tmp_path / "dirty.py"
+    dirty.write_text("import requests\nrequests.post('https://x')\n")
+    out = tmp_path / "out.sarif"
+
+    assert main(["doctor", "--format", "sarif", "-o", str(out), str(dirty)]) == 0
+    doc = json.loads(out.read_text())
+    assert doc["version"] == "2.1.0"
+    assert doc["runs"][0]["results"][0]["ruleId"] == UNGUARDED_CALL
