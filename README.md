@@ -53,16 +53,18 @@ per-step coordinate automatically:
 from sakrit import Sakrit, SqliteLedger, EffectDecl, ArgClass
 from sakrit.adapters.langgraph import LangGraphAdapter  # pip install "sakrit[langgraph]"
 
-sk = Sakrit(SqliteLedger("sakrit.db"), secret=b"<per-deployment-secret>", adapter=LangGraphAdapter())
+sk = Sakrit(
+    SqliteLedger("sakrit.db"), secret=b"<per-deployment-secret>", adapter=LangGraphAdapter()
+)
 
 
 @sk.effect(
     EffectDecl(
         "email.send",
         {
-            "to": ArgClass.IDENTITY,       # a different recipient is a different email
+            "to": ArgClass.IDENTITY,  # a different recipient is a different email
             "subject": ArgClass.IDENTITY,
-            "body": ArgClass.CONTENT,      # a reworded body is the *same* email
+            "body": ArgClass.CONTENT,  # a reworded body is the *same* email
         },
     )
 )
@@ -80,19 +82,27 @@ def send_email(to: str, subject: str, body: str) -> str:
 ```python
 sk = Sakrit(SqliteLedger("sakrit.db"), secret=b"<per-deployment-secret>")
 
-CHARGE = EffectDecl("payment.charge", {"customer": ArgClass.IDENTITY, "amount_cents": ArgClass.IDENTITY})
+CHARGE = EffectDecl(
+    "payment.charge", {"customer": ArgClass.IDENTITY, "amount_cents": ArgClass.IDENTITY}
+)
 
 
 def charge_card(customer: str, amount_cents: int) -> dict:
-    return stripe.PaymentIntent.create(customer=customer, amount=amount_cents)  # Stripe amounts are in cents
+    return stripe.PaymentIntent.create(
+        customer=customer, amount=amount_cents
+    )  # Stripe amounts are in cents
 
 
 order_id = "4471"  # from your domain — the order this charge settles
 
 # `key` names the intent — one per logical charge, supplied per call. Crash/retry of the
 # same order dedups; a different order gets a different key and charges.
-sk.guard(CHARGE, charge_card, kwargs={"customer": "cus_8815", "amount_cents": 4999},  # $49.99
-         key=f"order-{order_id}-charge")
+sk.guard(
+    CHARGE,
+    charge_card,
+    kwargs={"customer": "cus_8815", "amount_cents": 4999},  # $49.99
+    key=f"order-{order_id}-charge",
+)
 ```
 
 > **Where does the `key` come from?** It names the *intent*, so it's derived from your **domain**
@@ -143,6 +153,8 @@ Each is a real script, executed verbatim in CI:
   Agents SDK.
 - [`examples/money_agent/`](examples/money_agent/) — an agent that charges a card **exactly
   once**, even through a crash in the dual-write window: `python examples/money_agent/demo.py`.
+- [`examples/multi_worker/`](examples/multi_worker/) — **six workers racing the same charge**
+  concurrently, and it still fires once (leases + fencing): `python examples/multi_worker/demo.py`.
 
 ## The guarantee (L0–L3)
 

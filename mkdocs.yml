@@ -58,6 +58,7 @@ nav:
       - LangGraph: quickstart/langgraph.md
       - OpenAI Agents SDK: quickstart/openai-agents.md
   - Architecture: architecture.md
+  - Multiple workers &amp; agents: multi-worker.md
   - SED — the tool-declaration format: sed.md
   - Tooling:
       - sakrit doctor: doctor.md
