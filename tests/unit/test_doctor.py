@@ -176,6 +176,74 @@ requests.post('https://x')
     assert _codes(src) == []
 
 
+# --- A-6/A-7: markers are real comments only, coverage is precise --------------------
+def test_safe_file_marker_inside_a_string_literal_does_not_suppress() -> None:
+    # A-6: the marker text in a *string* (a docstring quoting it, a help message) must NOT
+    # opt the file out — only a real comment does. Previously a raw-source regex matched here.
+    src = """\
+DOCS = "annotate a machinery module with # sakrit: safe-file at the top"
+import requests
+requests.post("https://x")
+"""
+    assert _codes(src) == [UNGUARDED_CALL]  # the call is still flagged
+
+
+def test_safe_line_marker_inside_a_string_does_not_suppress() -> None:
+    # A-7: the line marker in string data on the call line must not suppress the call.
+    src = """\
+import requests
+requests.post("https://x", headers={"note": "# sakrit: safe"})
+"""
+    assert _codes(src) == [UNGUARDED_CALL]
+
+
+def test_real_safe_comment_still_suppresses() -> None:
+    src = 'import requests\nrequests.post("https://x")  # sakrit: safe\n'
+    assert _codes(src) == []
+
+
+def test_ambiguous_guard_name_does_not_suppress_an_unrelated_def() -> None:
+    # A-7: `def send` must not be silenced just because *some* `send` was passed to .guard()
+    # elsewhere in the file. With two defs sharing the name, coverage can't be attributed.
+    src = """\
+import requests
+
+def send():
+    requests.post("https://real-unrelated")
+
+class C:
+    def send(self):
+        requests.post("https://also-unrelated")
+
+sk.guard(decl, send, key="k")
+"""
+    assert _codes(src) == [UNGUARDED_CALL, UNGUARDED_CALL]  # both flagged, not suppressed
+
+
+def test_unambiguous_guard_name_still_suppresses() -> None:
+    src = """\
+import requests
+
+def send():
+    requests.post("https://x")
+
+sk.guard(decl, send, key="k")
+"""
+    assert _codes(src) == []  # single def of `send`, guarded by name → covered
+
+
+def test_bare_foreign_effect_decorator_does_not_suppress() -> None:
+    # A-7: a bare `@x.effect` (not call-shaped) from an unrelated library must not suppress.
+    src = """\
+import requests
+
+@celery.effect
+def task():
+    requests.post("https://x")
+"""
+    assert _codes(src) == [UNGUARDED_CALL]
+
+
 def test_nonexistent_path_is_a_loud_finding(tmp_path: Path) -> None:
     # Fail closed: a typo'd CI path must not read as "scanned clean".
     findings, scanned = scan_paths([tmp_path / "no-such-dir"])

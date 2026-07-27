@@ -11,11 +11,21 @@ are inherent (dynamic dispatch, cross-file flow); the doctor narrows the gap, th
 ledger closes it.
 
 A call is considered covered when it sits lexically inside a function that is
-(a) decorated with ``@…effect(…)``, (b) passed by name to ``….guard(…)`` /
-``….guard_async(…)`` in the same file, or (c) marked ``@…safe``. Coverage is
-purely lexical and per-file — a helper called *from* a guarded function is still
-flagged; annotate it after review. A module that IS effect machinery (a ledger, a
-migration runner) opts out wholesale with a ``# sakrit: safe-file`` comment.
+(a) decorated with a call-shaped ``@…effect(…)``, (b) passed by name to
+``….guard(…)`` / ``….guard_async(…)`` in the same file *when that name is
+unambiguous* (exactly one def in the file bears it), or (c) marked ``@…safe``.
+Coverage is purely lexical and per-file — a helper called *from* a guarded function
+is still flagged; annotate it after review. A module that IS effect machinery (a
+ledger, a migration runner) opts out wholesale with a ``# sakrit: safe-file`` comment.
+
+**Suppression markers are real comments only** (Fable A-6/A-7): ``# sakrit: safe`` /
+``# sakrit: safe-file`` are detected via :mod:`tokenize`, so the same text appearing
+inside a *string literal* (a docstring quoting the marker, a message telling a user to
+write it) never silently suppresses anything. The catalog and the coverage rules are a
+declared **heuristic** — a name-based guard-coverage match is deliberately conservative
+(it declines when a name is ambiguous, erring toward *flagging*), and a decorator is
+matched by terminal name (``effect``/``safe``), so a foreign ``@x.effect(…)`` from an
+unrelated library can still suppress; review a suppressed call you did not expect.
 
 Fail-closed reporting: a file that cannot be parsed or decoded is a loud
 ``SAKRIT000`` finding (it was not verified), never a silent skip.
@@ -24,7 +34,10 @@ Fail-closed reporting: a file that cannot be parsed or decoded is a loud
 from __future__ import annotations
 
 import ast
+import io
 import re
+import tokenize
+from collections import Counter
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,11 +49,36 @@ __all__ = ["Finding", "scan_path", "scan_paths", "scan_source"]
 PARSE_FAILURE = "SAKRIT000"
 UNGUARDED_CALL = "SAKRIT001"
 
-_SAFE_COMMENT = re.compile(r"#\s*sakrit:\s*safe\b")
+# Matched against real COMMENT tokens only (never raw source), so the marker text inside a
+# string literal is inert. ``safe`` excludes ``safe-file`` (negative lookahead) so the two
+# markers stay distinct.
+_SAFE_COMMENT = re.compile(r"#\s*sakrit:\s*safe(?!-file)\b")
 # Whole-file opt-out, for a module that IS effect machinery (a ledger, a migration
 # runner) rather than one that calls effects. Deliberately a distinct token from the
 # line marker so a file is never suppressed by accident.
 _SAFE_FILE = re.compile(r"#\s*sakrit:\s*safe-file\b")
+
+
+def _marker_lines(source: str) -> tuple[bool, set[int]]:
+    """Return ``(whole_file_opted_out, {safe line numbers})`` from **real comments only**.
+
+    Uses :mod:`tokenize` so a ``# sakrit: safe``/``safe-file`` string appearing inside a
+    literal never counts (Fable A-6/A-7). A tokenize error on malformed source is swallowed —
+    ``ast.parse`` will produce the loud ``SAKRIT000`` for that file.
+    """
+    whole = False
+    safe: set[int] = set()
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+            if tok.type == tokenize.COMMENT:
+                if _SAFE_FILE.search(tok.string):
+                    whole = True
+                elif _SAFE_COMMENT.search(tok.string):
+                    safe.add(tok.start[0])
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        pass
+    return whole, safe
+
 
 # The consequential-call catalog. Explicit and modest on purpose: each entry is a
 # shape the scanner can resolve *lexically within one file*; anything cleverer
@@ -144,8 +182,11 @@ class _FileFacts:
         self.from_http_verbs: dict[str, str] = {}  # bare name → "module.verb"
         self.instances: dict[str, str] = {}  # var name → "http_client" | "smtp" | "boto3"
         self.guarded_fn_names: set[str] = set()  # names passed to ….guard(…)/….guard_async(…)
+        self.fn_def_counts: Counter[str] = Counter()  # def name → how many defs bear it
         tracked = _HTTP_MODULES | {"smtplib", "stripe", "boto3"}
         for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                self.fn_def_counts[node.name] += 1
             if isinstance(node, ast.Import):
                 for alias in node.names:
                     root = alias.name.split(".")[0]
@@ -209,13 +250,29 @@ class _Scanner(ast.NodeVisitor):
 
     # -- function scopes: decide suppression once, at the def --------------------------
     def _enter_fn(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
-        deco_names = {_terminal_name(d) for d in node.decorator_list}
-        suppressed = (
-            bool(deco_names & {"effect", "safe"}) or node.name in self._facts.guarded_fn_names
-        )
+        suppressed = self._decorated_guarded(node) or self._guarded_by_name(node.name)
         self._suppression_depth += 1 if suppressed else 0
         self.generic_visit(node)
         self._suppression_depth -= 1 if suppressed else 0
+
+    @staticmethod
+    def _decorated_guarded(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+        """Whether a decorator marks the function guarded/safe. ``effect`` must be *call-shaped*
+        (``@sk.effect(decl)`` is always called) so a bare ``@x.effect`` marker from an unrelated
+        library does not suppress (A-7); ``@…safe`` may be bare or called."""
+        for d in node.decorator_list:
+            name = _terminal_name(d)
+            if name == "effect" and isinstance(d, ast.Call):
+                return True
+            if name == "safe":
+                return True
+        return False
+
+    def _guarded_by_name(self, name: str) -> bool:
+        """Covered because the function was passed to ``….guard(…)`` by name — but only when the
+        name is *unambiguous* in the file (exactly one def bears it). If two defs share a name,
+        the coverage can't be attributed, so decline and let the net flag both (A-7)."""
+        return name in self._facts.guarded_fn_names and self._facts.fn_def_counts[name] == 1
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self._enter_fn(node)
@@ -311,7 +368,8 @@ class _Scanner(ast.NodeVisitor):
 
 def scan_source(source: str, path: str = "<string>") -> list[Finding]:
     """Scan one source text. A parse failure is a loud ``SAKRIT000`` finding."""
-    if _SAFE_FILE.search(source):
+    whole_file_safe, safe_lines = _marker_lines(source)  # real comments only (A-6/A-7)
+    if whole_file_safe:
         return []  # the whole module is reviewed effect-machinery — opted out explicitly
     try:
         tree = ast.parse(source)
@@ -325,9 +383,6 @@ def scan_source(source: str, path: str = "<string>") -> list[Finding]:
                 message=f"could not parse — file NOT verified: {exc.msg}",
             )
         ]
-    safe_lines = {
-        i for i, text in enumerate(source.splitlines(), start=1) if _SAFE_COMMENT.search(text)
-    }
     scanner = _Scanner(path, _FileFacts(tree), safe_lines)
     scanner.visit(tree)
     return sorted(scanner.findings, key=lambda f: (f.line, f.col))
