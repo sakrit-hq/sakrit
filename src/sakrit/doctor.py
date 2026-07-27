@@ -80,9 +80,8 @@ RULES: dict[str, dict[str, str]] = {
     },
 }
 
-# Carried in the SARIF driver metadata. T-ORG: update on the org move (the `nagaraju-oruganti`
-# grep in the migration checklist catches it).
-_INFORMATION_URI = "https://github.com/nagaraju-oruganti/sakrit"
+# Carried in the SARIF driver metadata. Part of the frozen output shape, so it's pinned here.
+_INFORMATION_URI = "https://github.com/sakrit-hq/sakrit"
 
 # Matched against real COMMENT tokens only (never raw source), so the marker text inside a
 # string literal is inert. ``safe`` excludes ``safe-file`` (negative lookahead) so the two

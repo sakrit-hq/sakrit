@@ -26,9 +26,8 @@ It's a single static file — deploy `landing/` anywhere:
    - **A form service** (Formspree, Buttondown, ConvertKit): set the form's `action` to your endpoint
      and delete the JS submit interceptor at the bottom of the file.
    - **A serverless function** (e.g. a Vercel `/api/waitlist` route): POST the email there and store it.
-2. **Links.** The nav/footer "Docs" links point at the GitHub repo for now — repoint them at the live
-   docs site once Pages is published, and sweep the `nagaraju-oruganti` URLs when the repo moves to the
-   `sakrit` org (T-ORG).
+2. **Links.** The nav/footer "Docs" links point at the `sakrit-hq/sakrit` GitHub repo for now —
+   repoint them at the live docs site once Pages is published.
 
 ## Notes
 
