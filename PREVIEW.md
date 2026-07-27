@@ -13,9 +13,9 @@ no telemetry, works offline.
 You have read access to the private repo, so install straight from git:
 
 ```bash
-pip install "git+https://github.com/nagaraju-oruganti/sakrit.git"
+pip install "git+https://github.com/sakrit-hq/sakrit.git"
 # framework adapters are optional extras:
-pip install "sakrit[langgraph] @ git+https://github.com/nagaraju-oruganti/sakrit.git"
+pip install "sakrit[langgraph] @ git+https://github.com/sakrit-hq/sakrit.git"
 ```
 
 If git prompts for credentials, use a GitHub personal access token with `repo` read scope as the
@@ -70,8 +70,8 @@ and `examples/money_agent/` (an agent that charges a card exactly once, even thr
 
 ## Where to report
 
-- **Bugs / findings / questions:** open a [Discussion](https://github.com/nagaraju-oruganti/sakrit/discussions)
-  or an [Issue](https://github.com/nagaraju-oruganti/sakrit/issues) on the repo.
+- **Bugs / findings / questions:** open a [Discussion](https://github.com/sakrit-hq/sakrit/discussions)
+  or an [Issue](https://github.com/sakrit-hq/sakrit/issues) on the repo.
 - **Security-flavored issues:** please use private reporting (see `SECURITY.md`), not a public issue.
 - **Direct line:** you also have the founder's contact from your invite — use it freely.
 

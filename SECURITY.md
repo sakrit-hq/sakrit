@@ -9,7 +9,7 @@ helping keep Sakrit and its users safe.
 
 **Please report vulnerabilities privately — do not open a public issue for a security problem.**
 
-Preferred channel: **[GitHub Private Vulnerability Reporting](https://github.com/nagaraju-oruganti/sakrit/security/advisories/new)**
+Preferred channel: **[GitHub Private Vulnerability Reporting](https://github.com/sakrit-hq/sakrit/security/advisories/new)**
 (the "Report a vulnerability" button on the repository's Security tab). This keeps the report,
 discussion, and fix private until a coordinated disclosure, and requires no email exchange.
 

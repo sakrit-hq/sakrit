@@ -52,7 +52,7 @@ appointed representative at an online or offline event.
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be reported **privately** to
 the project maintainers via
-[GitHub's private reporting](https://github.com/nagaraju-oruganti/sakrit/security/advisories/new) on
+[GitHub's private reporting](https://github.com/sakrit-hq/sakrit/security/advisories/new) on
 this repository, which reaches the maintainers confidentially.
 <!-- TODO before public launch (phase0 C-5): publish a dedicated conduct contact address here and
      make it the primary channel; the private-reporting link above is the interim channel. -->

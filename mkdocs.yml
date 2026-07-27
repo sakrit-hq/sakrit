@@ -1,10 +1,9 @@
 site_name: Sakrit
 site_description: Exactly-once effects for AI agents.
-# T-ORG: update site_url / repo_url / edit_uri when the repo moves to the sakrit org.
 # site_url gives correct canonical links + a valid sitemap on GitHub Pages.
-site_url: https://nagaraju-oruganti.github.io/sakrit/
-repo_url: https://github.com/nagaraju-oruganti/sakrit
-repo_name: nagaraju-oruganti/sakrit
+site_url: https://sakrit-hq.github.io/sakrit/
+repo_url: https://github.com/sakrit-hq/sakrit
+repo_name: sakrit-hq/sakrit
 copyright: Apache-2.0
 
 # The public docs live here — a tracked tree, deliberately separate from the gitignored,

@@ -1,7 +1,7 @@
 # Performance
 
 Buyers ask what the guarantee costs, so we measured it — with a
-[committed script](https://github.com/nagaraju-oruganti/sakrit/blob/main/bench/benchmark.py) you can
+[committed script](https://github.com/sakrit-hq/sakrit/blob/main/bench/benchmark.py) you can
 rerun. The short answer: **exactly-once costs about one durable disk commit per effect** — ~0.15 ms at
 the median on the power-crash-safe default — and next to a real side effect (a Stripe or SMTP call is
 tens to hundreds of *milliseconds*) that's well under 1% at the median. The honest caveat is the

@@ -7,9 +7,9 @@ name: Release
 # Real release:          push a tag `vX.Y.Z` (must match src/sakrit/__about__.py). Builds, checks,
 #   then publishes to PyPI via Trusted Publishing (OIDC — no API token stored in the repo).
 #
-# Trusted Publishing setup (one-time, on PyPI, per the T-ORG migration note when the org moves):
+# Trusted Publishing setup (one-time, on PyPI — do this before the first real release):
 #   PyPI project → Settings → Publishing → add a GitHub publisher:
-#     owner = nagaraju-oruganti, repo = sakrit, workflow = release.yml, environment = pypi
+#     owner = sakrit-hq, repo = sakrit, workflow = release.yml, environment = pypi
 
 on:
   push:

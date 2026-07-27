@@ -1,6 +1,6 @@
 # Sakrit
 
-[![CI](https://github.com/nagaraju-oruganti/sakrit/actions/workflows/ci.yml/badge.svg)](https://github.com/nagaraju-oruganti/sakrit/actions/workflows/ci.yml)
+[![CI](https://github.com/sakrit-hq/sakrit/actions/workflows/ci.yml/badge.svg)](https://github.com/sakrit-hq/sakrit/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/sakrit.svg)](https://pypi.org/project/sakrit/)
 [![Python](https://img.shields.io/pypi/pyversions/sakrit.svg)](https://pypi.org/project/sakrit/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
