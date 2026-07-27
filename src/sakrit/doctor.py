@@ -406,12 +406,19 @@ def scan_source(source: str, path: str = "<string>") -> list[Finding]:
     whole_file_safe, safe_lines = _marker_lines(source)  # real comments only (A-6/A-7)
     if whole_file_safe:
         return []  # the whole module is reviewed effect-machinery — opted out explicitly
+    # One guard over BOTH the parse and the walk. A pathologically deep expression (a minified or
+    # generated file) can exhaust the recursion limit in *either* place depending on the Python
+    # version — ast.parse raises RecursionError on 3.11-3.13, the visitor does on 3.10/3.14. Catch
+    # it wherever it fires so "crash-free" is a property of the code, not the interpreter version.
+    # The RecursionError handler does minimal stack work (build one Finding) before returning.
     try:
-        # Suppress warnings the *scanned* code would emit (e.g. a legacy invalid escape
-        # sequence): the doctor must not spew the target's SyntaxWarnings into its own output.
+        # Suppress warnings the *scanned* code would emit (e.g. a legacy invalid escape sequence):
+        # the doctor must not spew the target's SyntaxWarnings into its own output.
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             tree = ast.parse(source)
+        scanner = _Scanner(path, _FileFacts(tree), safe_lines)
+        scanner.visit(tree)
     except SyntaxError as exc:
         return [
             Finding(
@@ -422,33 +429,18 @@ def scan_source(source: str, path: str = "<string>") -> list[Finding]:
                 message=f"could not parse — file NOT verified: {exc.msg}",
             )
         ]
-    except ValueError as exc:
-        # ast.parse raises ValueError (not SyntaxError) on source containing null bytes and a
-        # few other malformed inputs — still "not verified", still loud, never an escaped crash.
+    except (ValueError, RecursionError) as exc:
+        # ValueError: null bytes and a few other malformed inputs (ast.parse raises it, not
+        # SyntaxError). RecursionError: pathological nesting. Either way — not verified, still loud,
+        # never an escaped crash.
+        detail = "too deeply nested to scan" if isinstance(exc, RecursionError) else str(exc)
         return [
             Finding(
                 path=path,
                 line=1,
                 col=0,
                 code=PARSE_FAILURE,
-                message=f"could not parse — file NOT verified: {exc}",
-            )
-        ]
-    try:
-        scanner = _Scanner(path, _FileFacts(tree), safe_lines)
-        scanner.visit(tree)
-    except RecursionError:
-        # A pathologically deep expression (a minified/generated file) exhausts the visitor's
-        # stack. ast.parse survives it; the recursive walk doesn't. Degrade to a loud SAKRIT000
-        # rather than let the exception escape the CLI as a traceback — "crash-free" must be a
-        # property of the code, not just of the pinned corpus. (Handler does minimal stack work.)
-        return [
-            Finding(
-                path=path,
-                line=1,
-                col=0,
-                code=PARSE_FAILURE,
-                message="too deeply nested to scan — file NOT verified",
+                message=f"could not parse — file NOT verified: {detail}",
             )
         ]
     return sorted(scanner.findings, key=lambda f: (f.line, f.col))

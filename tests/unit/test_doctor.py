@@ -271,12 +271,14 @@ def test_null_byte_source_is_a_loud_finding_not_a_crash() -> None:
 
 
 def test_deeply_nested_source_is_a_loud_finding_not_a_crash() -> None:
-    # F-4.2: a pathologically deep expression exhausts the visitor's stack. ast.parse survives;
-    # the recursive scan must degrade to SAKRIT000, never let RecursionError escape the CLI.
+    # F-4.2: a pathologically deep expression exhausts the recursion limit — in ast.parse on some
+    # Python versions (3.11-3.13), in the visitor on others (3.10/3.14). Either way the doctor must
+    # degrade to a single loud SAKRIT000, never let RecursionError escape the CLI. Assert the
+    # version-robust property (one SAKRIT000, "NOT verified"), not the exact wording.
     deep = "x = " + "1+" * 20000 + "1\n"
-    findings = scan_source(deep, "generated.py")
+    findings = scan_source(deep, "generated.py")  # must not raise on any supported Python
     assert [f.code for f in findings] == [PARSE_FAILURE]
-    assert "deeply nested" in findings[0].message
+    assert "NOT verified" in findings[0].message
 
 
 def test_existing_root_with_no_python_is_fail_closed(tmp_path: Path) -> None:
