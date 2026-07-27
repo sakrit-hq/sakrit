@@ -282,33 +282,47 @@ def _start_heartbeat_async(
         return None
     period = interval if interval is not None else max(lease_seconds / 3.0, 0.001)
     stop = asyncio.Event()
+    # Anchor the overdue clock at *creation* (synchronously, before any yield), not at the
+    # task's first run. The task may not be scheduled until after the effect's first blocking
+    # stretch — asyncio's task-startup ordering differs across CPython versions — so measuring
+    # the gap from first-run made the starvation-detection (V-9) depend on that ordering and
+    # miss the block on some versions. From creation, the gap always reflects true elapsed time.
+    loop = asyncio.get_running_loop()
+    started = loop.time()
 
     async def _beat() -> None:
-        loop = asyncio.get_running_loop()
-        last = loop.time()
+        last = started
         while True:
             try:
                 await asyncio.wait_for(stop.wait(), timeout=period)
-                return  # stop set → done
+                stopped = True
             except asyncio.TimeoutError:
-                # V-9: if the loop starved us past the lease, the renewal is already too
-                # late — the lease may have expired and a peer taken over. Surface it.
-                gap = loop.time() - last
-                if gap > lease_seconds:
-                    logger.warning(
-                        "sakrit: async heartbeat for %s ran %.2fs late (> lease %.2fs) — the "
-                        "effect is not yielding to the loop; the lease may have expired",
-                        key,
-                        gap,
-                        lease_seconds,
-                    )
-                last = loop.time()
-                # V-8: never let the renewal die silently. Log a raise / a False renewal.
-                try:
-                    if not ledger.heartbeat(key, ledger.owner, lease_seconds):
-                        logger.warning("sakrit: heartbeat for %s did not renew (lease lost?)", key)
-                except Exception:  # noqa: BLE001
-                    logger.exception("sakrit: heartbeat for %s raised; will retry", key)
+                stopped = False
+            # V-9: on EITHER wake — a periodic timeout OR the final stop — check whether the
+            # loop starved us past the lease. Measuring on the stop path too makes detection
+            # independent of *when* this task first got scheduled (asyncio task-startup ordering
+            # differs across CPython versions): a starving effect that runs right up to stop is
+            # still surfaced, even if this task never got a timeout iteration before then. If
+            # overdue, the renewal is already too late — the lease may have expired and a peer
+            # taken over.
+            gap = loop.time() - last
+            if gap > lease_seconds:
+                logger.warning(
+                    "sakrit: async heartbeat for %s ran %.2fs late (> lease %.2fs) — the "
+                    "effect is not yielding to the loop; the lease may have expired",
+                    key,
+                    gap,
+                    lease_seconds,
+                )
+            if stopped:
+                return
+            last = loop.time()
+            # V-8: never let the renewal die silently. Log a raise / a False renewal.
+            try:
+                if not ledger.heartbeat(key, ledger.owner, lease_seconds):
+                    logger.warning("sakrit: heartbeat for %s did not renew (lease lost?)", key)
+            except Exception:  # noqa: BLE001
+                logger.exception("sakrit: heartbeat for %s raised; will retry", key)
 
     return stop, asyncio.ensure_future(_beat())
 
