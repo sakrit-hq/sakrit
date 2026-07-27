@@ -1,0 +1,52 @@
+# Triage label set for Sakrit (roadmap Stage 2 · Phase 0 · deliverable 3).
+# Synced by .github/workflows/labels.yml (run on demand). Edit here, then run the workflow.
+
+# --- triage state ---
+- name: needs-triage
+  color: "ededed"
+  description: Not yet reviewed by a maintainer
+- name: help wanted
+  color: "008672"
+  description: A good issue for an outside contributor to pick up
+- name: good first issue
+  color: "7057ff"
+  description: A gentle on-ramp for first-time contributors
+
+# --- type ---
+- name: bug
+  color: "d73a4a"
+  description: Something behaves incorrectly
+- name: correctness
+  color: "b60205"
+  description: Touches the exactly-once guarantee — highest severity (silent dup / lost effect)
+- name: enhancement
+  color: "a2eeef"
+  description: New capability or improvement
+- name: documentation
+  color: "0075ca"
+  description: Docs, quickstarts, or the assurance/guarantee pages
+- name: question
+  color: "d876e3"
+  description: A usage question (prefer Discussions)
+
+# --- area ---
+- name: "area: core/ledger"
+  color: "c5def5"
+  description: The ledger, migrations, settle/recovery
+- name: "area: doctor"
+  color: "c5def5"
+  description: The static unguarded-call scanner and its output formats
+- name: "area: adapters"
+  color: "c5def5"
+  description: LangGraph / OpenAI Agents / plain adapters
+- name: "area: cli"
+  color: "c5def5"
+  description: The sakrit CLI (doctor / audit / resolve)
+
+# --- resolution ---
+- name: wontfix
+  color: "ffffff"
+  description: This will not be worked on (with a stated reason)
+- name: duplicate
+  color: "cfd3d7"
+  description: Already tracked elsewhere

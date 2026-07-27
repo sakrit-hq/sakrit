@@ -1,0 +1,83 @@
+name: Release
+
+# Tagged-release automation with a dry-run mode (roadmap Stage 2 · Phase 0 · deliverable 2).
+#
+# Dry run (no publish):  Actions → Release → "Run workflow" (workflow_dispatch). Builds the
+#   sdist + wheel and runs `twine check` so we can rehearse a release without touching PyPI.
+# Real release:          push a tag `vX.Y.Z` (must match src/sakrit/__about__.py). Builds, checks,
+#   then publishes to PyPI via Trusted Publishing (OIDC — no API token stored in the repo).
+#
+# Trusted Publishing setup (one-time, on PyPI, per the T-ORG migration note when the org moves):
+#   PyPI project → Settings → Publishing → add a GitHub publisher:
+#     owner = nagaraju-oruganti, repo = sakrit, workflow = release.yml, environment = pypi
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Why this dry run (recorded in the run)"
+        required: false
+        default: "release rehearsal"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build + check (dry-run safe)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verify tag matches package version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(uv run --locked python -c 'from sakrit.__about__ import __version__; print(__version__)')"
+          echo "tag=$tag  package=$pkg"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::tag v$tag does not match package version $pkg (src/sakrit/__about__.py)"
+            exit 1
+          fi
+
+      - name: Build sdist + wheel
+        run: uv build
+
+      - name: Check metadata (twine check)
+        run: uvx twine check dist/*
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: publish to PyPI
+    needs: build
+    # Only a real tag push publishes. workflow_dispatch always stops after build+check (the dry run).
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: pypi
+    permissions:
+      id-token: write # OIDC for Trusted Publishing; no stored token
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1
