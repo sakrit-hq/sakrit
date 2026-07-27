@@ -23,10 +23,6 @@ jobs:
     name: doctor is crash-free on real repos
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    # m14: both steps share this clone cache, so the report step reuses the test's clones
-    # instead of re-cloning all four repos.
-    env:
-      SAKRIT_CORPUS_CACHE: ${{ runner.temp }}/corpus-cache
     steps:
       - uses: actions/checkout@v4
 
@@ -39,9 +35,16 @@ jobs:
       - name: Sync dependencies
         run: uv sync --locked --dev
 
+      # m14: both steps share this clone cache (same path on the same runner), so the report step
+      # reuses the test's clones instead of re-cloning all four repos. Set at step level because the
+      # `runner` context is not available in a job-level `env:` (it fails the workflow at startup).
       - name: Run the corpus (crash-free is the bar)
+        env:
+          SAKRIT_CORPUS_CACHE: ${{ runner.temp }}/corpus-cache
         run: uv run pytest tests/corpus -m corpus -v
 
       - name: Print the noise-floor report
         if: always()
+        env:
+          SAKRIT_CORPUS_CACHE: ${{ runner.temp }}/corpus-cache
         run: uv run python tests/corpus/harness.py
