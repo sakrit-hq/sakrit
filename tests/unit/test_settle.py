@@ -230,3 +230,39 @@ def test_durable_across_reconnect(tmp_path: "object") -> None:
         out = settle(led2, key=key, scope="run-1", tool="email.send", fingerprint=fp, fn=effect)
     assert out == "sent"
     assert calls == 1
+
+
+# --- P4-8: divergence is uniform across row states, not just SUCCEEDED replay ---------
+def _make_ambiguous(led: SqliteLedger, key: str, fp: str) -> None:
+    """Drive a key to AMBIGUOUS the honest way: an L0 crash in the window (EXECUTING at
+    recovery, no provider dedup, no reconcile → surfaced AMBIGUOUS)."""
+    led.claim(key, "run-1", "email.send", fp)
+    led.mark_executing(key)
+    assert led.recover() == [key]
+    assert led.state_of(key) is EffectState.AMBIGUOUS
+
+
+def test_same_action_on_an_ambiguous_row_is_ambiguous() -> None:
+    with SqliteLedger(":memory:") as led:
+        key, fp = _key(), _fp(to="a@x.com")
+        _make_ambiguous(led, key, fp)
+        with pytest.raises(AmbiguousOutcome, match="outcome unknown"):
+            settle(led, key=key, scope="run-1", tool="email.send", fingerprint=fp, fn=lambda: "x")
+
+
+def test_different_action_on_an_ambiguous_row_is_divergent_not_ambiguous() -> None:
+    # P4-8: a genuinely DIFFERENT action colliding on an AMBIGUOUS key must say "different
+    # action", not send the operator to investigate "did my effect land?" for one they never
+    # issued.
+    with SqliteLedger(":memory:") as led:
+        key = _key()
+        _make_ambiguous(led, key, _fp(to="a@x.com"))
+        with pytest.raises(DivergentRetry, match="different action collides"):
+            settle(
+                led,
+                key=key,
+                scope="run-1",
+                tool="email.send",
+                fingerprint=_fp(to="b@x.com"),  # a different recipient → different identity
+                fn=lambda: "x",
+            )

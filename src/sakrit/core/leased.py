@@ -201,6 +201,12 @@ def settle_leased(
             ledger._tell_replay(key)  # V-2 rider: served-not-re-fired is told, not silent
             return claim.result
         if claim.kind is ClaimKind.AMBIGUOUS:
+            if claim.fingerprint is not None and claim.fingerprint != fingerprint:
+                raise DivergentRetry(  # P4-8: a different action colliding, not a retry
+                    f"{key}: a different action collides on the key of a prior attempt whose "
+                    "outcome is unresolved. This is not a retry of that action — refusing. "
+                    "Use a distinct key, or resolve the ambiguous prior."
+                )
             raise AmbiguousOutcome(f"{key}: a prior attempt's outcome is unknown — resolve it")
         if claim.kind is ClaimKind.BUSY:
             # Another worker holds a live lease — wait for its result (or its death,
@@ -367,6 +373,12 @@ async def settle_leased_async(
             ledger._tell_replay(key)  # V-2 rider: served-not-re-fired is told, not silent
             return claim.result
         if claim.kind is ClaimKind.AMBIGUOUS:
+            if claim.fingerprint is not None and claim.fingerprint != fingerprint:
+                raise DivergentRetry(  # P4-8: a different action colliding, not a retry
+                    f"{key}: a different action collides on the key of a prior attempt whose "
+                    "outcome is unresolved. This is not a retry of that action — refusing. "
+                    "Use a distinct key, or resolve the ambiguous prior."
+                )
             raise AmbiguousOutcome(f"{key}: a prior attempt's outcome is unknown — resolve it")
         if claim.kind is ClaimKind.BUSY:
             if time.time() > deadline:

@@ -63,6 +63,15 @@ def _decide(
         ledger._tell_replay(key)  # V-2 rider: served-not-re-fired is told, not silent
         return claim.result
     if claim.kind is ClaimKind.AMBIGUOUS:
+        if claim.fingerprint is not None and claim.fingerprint != fingerprint:
+            # P4-8: this is not a retry of the ambiguous action — it is a *different* action
+            # colliding on its key. Name that, rather than send the operator to investigate
+            # "did my effect land?" for an effect they never issued.
+            raise DivergentRetry(
+                f"{key}: a different action collides on the key of a prior attempt whose "
+                "outcome is unresolved (it crashed after dispatch). This is not a retry of "
+                "that action — refusing. Use a distinct key, or resolve the ambiguous prior."
+            )
         raise AmbiguousOutcome(
             f"{key}: a prior attempt crashed after dispatch; outcome unknown — resolve it"
         )

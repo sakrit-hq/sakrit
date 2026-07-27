@@ -520,7 +520,9 @@ class SqliteLedger:
                         result = None if row[1] is None else json.loads(row[1])
                     claim = Claim(ClaimKind.REPLAY, result=result, fingerprint=row[2])
                 elif state is EffectState.AMBIGUOUS:
-                    claim = Claim(ClaimKind.AMBIGUOUS)
+                    # P4-8: carry the stored fingerprint so the caller can tell a genuine
+                    # ambiguity (same action) from a *different* action colliding on the key.
+                    claim = Claim(ClaimKind.AMBIGUOUS, fingerprint=row[2])
                 elif state in (EffectState.EXECUTING, EffectState.CLAIMED):
                     # No death-evidence in the claim path (single-worker ≠ single-
                     # thread — parallel branches / tool-calls can hold a *live* row) →
@@ -794,7 +796,10 @@ class SqliteLedger:
                     )
                     claim = Claim(ClaimKind.REPLAY, result=result, fingerprint=row[2])
                 elif state is EffectState.AMBIGUOUS:
-                    claim = Claim(ClaimKind.AMBIGUOUS)
+                    # P4-8: carry the stored fingerprint (a divergent caller on an already-
+                    # AMBIGUOUS row is a different action colliding, not a retry of the
+                    # ambiguous one — this branch precedes the V-10 in-flight gate below).
+                    claim = Claim(ClaimKind.AMBIGUOUS, fingerprint=row[2])
                 elif lease_expires is not None and lease_expires > now and lease_owner != owner:
                     claim = Claim(ClaimKind.BUSY)  # a live owner holds it
                 elif row[2] != fingerprint:
