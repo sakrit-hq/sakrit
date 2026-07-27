@@ -108,6 +108,22 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _fp_matches_stored(
+    stored_fp: str,
+    stored_secret_id: str | None,
+    incoming_fp: str,
+    verify: Callable[[str, str | None], bool] | None,
+) -> bool:
+    """Whether a stored fingerprint matches the incoming action. Through the dual-secret
+    ``verify`` closure when a rotation window is active (recompute under the row's *signing*
+    secret, keyed by ``secret_id``); else a plain byte-compare (single-secret, unchanged).
+    Mirrors ``settle._fingerprint_ok`` — duplicated here because ``core.settle`` imports
+    ``core.ledger``, not the reverse."""
+    if verify is not None:
+        return verify(stored_fp, stored_secret_id)
+    return stored_fp == incoming_fp
+
+
 def _within_ttl(created_at: str, ttl_s: float | None) -> bool:
     """Whether a row claimed at ``created_at`` is still inside its provider key-TTL.
 
@@ -751,6 +767,7 @@ class SqliteLedger:
         provider_ttl_s: float | None = None,
         reconcilable: bool = False,
         secret_id: str | None = None,
+        verify: Callable[[str, str | None], bool] | None = None,
     ) -> Claim:
         """Atomic lease-based claim (multi-worker).
 
@@ -762,6 +779,11 @@ class SqliteLedger:
         provider key-TTL also surfaces ``AMBIGUOUS`` — a re-dispatch would no longer
         dedup (P1-5, leased variant). Fencing makes a returning zombie harmless: its
         stale-token writes are rejected (see :meth:`fence`).
+
+        ``verify`` (C-1) is the dual-secret verifier: when a rotation window is configured, the
+        takeover divergence gate compares through it (recomputing the incoming args under the
+        row's *signing* secret) instead of a raw byte-compare, so a rotation does not brick
+        every old-signed non-terminal row. ``None`` → byte-compare (single-secret, unchanged).
         """
         self._bind_claim_thread()  # V-3: one connection per worker
         if now is None:
@@ -822,17 +844,26 @@ class SqliteLedger:
                     claim = Claim(ClaimKind.AMBIGUOUS, fingerprint=row[2], secret_id=row[11])
                 elif lease_expires is not None and lease_expires > now and lease_owner != owner:
                     claim = Claim(ClaimKind.BUSY)  # a live owner holds it
-                elif row[2] != fingerprint:
+                elif not _fp_matches_stored(row[2], row[11], fingerprint, verify):
                     # V-10: divergence detection on the takeover path. Every takeover below
                     # transfers the lease and may re-run the action; a taker presenting a
-                    # *different* fingerprint is a different logical action for the same key,
-                    # and the key names one action (positional identity). Refuse loudly BEFORE
-                    # any lease transfer — never run B's action under A's identity, never let B
-                    # "resolve" A's row. (REPLAY checks fp caller-side; this is the in-flight
-                    # gate the takeover path was missing.)
+                    # *different* action for the same key is refused loudly BEFORE any lease
+                    # transfer — never run B's action under A's identity, never let B "resolve"
+                    # A's row. (REPLAY checks fp caller-side; this is the in-flight gate the
+                    # takeover path was missing.)
+                    #
+                    # C-1: compare through the dual-secret ``verify`` closure when a rotation
+                    # window is active — else a rotation would refuse EVERY old-signed row
+                    # (including CLAIMED/FAILED that provably never ran, re-ownable states)
+                    # forever, since new workers sign the new secret. ``verify`` recomputes the
+                    # incoming args under the row's *signing* secret (by ``secret_id``), so the
+                    # SAME action still matches across a rotation; a genuinely divergent action
+                    # still fails; a secret rotated out of the window raises ``SchemeMismatch``.
                     raise DivergentRetry(
-                        f"{key}: identity args differ from the in-flight action; the key names "
-                        "one action, not one tool — refusing takeover by a divergent caller"
+                        f"{key}: identity args differ from the recorded action for this key — "
+                        "the key names one action, not one tool; refusing takeover by a "
+                        "divergent caller. (If you just rotated the HMAC secret, add the old "
+                        "secret to verify_secrets — a rotated-out secret can look like this.)"
                     )
                 elif state is EffectState.EXECUTING and not (provider_dedup or reconcilable):
                     # L0 expired-lease takeover is forbidden — no safe retry exists.

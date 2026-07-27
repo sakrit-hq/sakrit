@@ -195,6 +195,7 @@ def settle_leased(
             provider_ttl_s=provider_ttl_s,
             reconcilable=reconcilable,
             secret_id=secret_id,
+            verify=verify,
         )
 
         if claim.kind is ClaimKind.REPLAY:
@@ -385,6 +386,7 @@ async def settle_leased_async(
             provider_ttl_s=provider_ttl_s,
             reconcilable=reconcilable,
             secret_id=secret_id,
+            verify=verify,
         )
 
         if claim.kind is ClaimKind.REPLAY:

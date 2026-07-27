@@ -15,7 +15,10 @@ obligation lives on the method that carries it (see ``docs/dev-notes/ledger-prot
 - ``claim`` / ``claim_leased`` — SQLite's ``BEGIN IMMEDIATE`` (writer-lock-at-BEGIN) has no
   Postgres analogue: use ``SELECT … FOR UPDATE`` + ``INSERT … ON CONFLICT`` (two workers
   inserting one new key otherwise raises a unique violation under MVCC), plus
-  serialization-failure retries. The claim MUST remain atomic-per-key.
+  serialization-failure retries. The claim MUST remain atomic-per-key. ``claim_leased``'s
+  takeover divergence gate MUST compare through the ``verify`` callable when it is supplied
+  (the dual-secret rotation window, C-1), not a raw byte-compare of the stored fingerprint —
+  else a rotation bricks every old-signed non-terminal row.
 - ``recover`` / ``pending_reconcile`` — the scan wants ``SKIP LOCKED`` thinking, and MUST
   read committed state.
 - ``fence`` — the conditional UPDATE-by-token ports cleanly, but MUST stay a single
@@ -29,6 +32,7 @@ silent exactly-once break — the semantics are the real contract.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Protocol, runtime_checkable
 
 from sakrit.core.ledger import Claim, EffectState
@@ -106,6 +110,7 @@ class LeasedLedger(Ledger, Protocol):
         provider_ttl_s: float | None = None,
         reconcilable: bool = False,
         secret_id: str | None = None,
+        verify: Callable[[str, str | None], bool] | None = None,
     ) -> Claim: ...
 
     def fence(self, key: str, token: int, state: EffectState, *, result: object = None) -> bool: ...

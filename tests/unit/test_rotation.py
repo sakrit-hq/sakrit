@@ -5,6 +5,7 @@ keyring (keyed by the P5-3 secret_id) so an in-flight row signed by the old secr
 replays during the drain. A genuinely different action still diverges; a secret rotated
 clean out of the window is refused loudly, never silently mis-compared."""
 
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -90,6 +91,115 @@ def test_secret_rotated_clean_out_of_window_refuses_loudly(tmp_path: Path) -> No
     # not silently mis-compared into a DivergentRetry.
     with pytest.raises(SchemeMismatch, match="rotated out of the window"):
         _settle_under(db, NEW, "a@x.com", calls, verify_secrets=(OTHER,))
+
+
+# --- C-1: rotation must not brick old-signed non-terminal leased rows -----------------
+from sakrit.core.ledger import ClaimKind, EffectState  # noqa: E402
+
+ARGS = {"to": "a@x.com"}
+
+
+def _leased_verify(args: Mapping[str, object], keyring: dict[str, bytes], primary: bytes):  # type: ignore[no-untyped-def]
+    return lambda sfp, sid: matches_fingerprint(
+        DECL, args, sfp, sid, keyring=keyring, primary_secret=primary
+    )
+
+
+def _old_signed_row(led: SqliteLedger, key: str, state: EffectState) -> None:
+    """Create a leased row signed by OLD in the given non-terminal state (lease expires at 130)."""
+    old_fp = fingerprint(DECL, ARGS, secret=OLD)
+    c = led.claim_leased(
+        key,
+        "s",
+        DECL.tool,
+        old_fp,
+        owner="A",
+        lease_seconds=30,
+        now=100.0,
+        secret_id=secret_id(OLD),
+    )
+    assert c.kind is ClaimKind.PROCEED
+    if state is EffectState.EXECUTING:
+        assert led.fence(key, c.fencing_token, EffectState.EXECUTING)
+    elif state is EffectState.FAILED:
+        assert led.fence(key, c.fencing_token, EffectState.FAILED)  # terminal → lease released
+    # CLAIMED: leave as-is (crash before dispatch, nothing ran).
+
+
+@pytest.mark.parametrize("state", [EffectState.CLAIMED, EffectState.FAILED, EffectState.EXECUTING])
+def test_rotation_does_not_brick_old_signed_leased_takeover(
+    tmp_path: Path, state: EffectState
+) -> None:
+    keyring = {secret_id(OLD): OLD, secret_id(NEW): NEW}
+    new_fp = fingerprint(DECL, ARGS, secret=NEW)
+    # Bug shape (no window): the NEW-signed same-action taker is refused by the raw byte-gate.
+    with SqliteLedger(tmp_path / f"nb-{state.value}.db", multi_worker=True) as led:
+        _old_signed_row(led, "k", state)
+        with pytest.raises(DivergentRetry):
+            led.claim_leased(
+                "k",
+                "s",
+                DECL.tool,
+                new_fp,
+                owner="B",
+                lease_seconds=30,
+                now=200.0,
+                secret_id=secret_id(NEW),
+            )
+    # Fixed (window): verified under the row's OLD secret → takeover proceeds, no false divergence
+    # (CLAIMED/FAILED re-own → PROCEED; EXECUTING-L0 → AMBIGUOUS, still not a DivergentRetry).
+    with SqliteLedger(tmp_path / f"win-{state.value}.db", multi_worker=True) as led:
+        _old_signed_row(led, "k", state)
+        c = led.claim_leased(
+            "k",
+            "s",
+            DECL.tool,
+            new_fp,
+            owner="B",
+            lease_seconds=30,
+            now=200.0,
+            secret_id=secret_id(NEW),
+            verify=_leased_verify(ARGS, keyring, NEW),
+        )
+        if state in (EffectState.CLAIMED, EffectState.FAILED):
+            assert c.kind is ClaimKind.PROCEED  # provably-never-ran → re-ownable across rotation
+
+
+def test_rotation_leased_takeover_still_refuses_a_divergent_action(tmp_path: Path) -> None:
+    keyring = {secret_id(OLD): OLD, secret_id(NEW): NEW}
+    with SqliteLedger(tmp_path / "div.db", multi_worker=True) as led:
+        _old_signed_row(led, "k", EffectState.CLAIMED)
+        diff = _leased_verify({"to": "b@x.com"}, keyring, NEW)  # a genuinely different action
+        with pytest.raises(DivergentRetry):
+            led.claim_leased(
+                "k",
+                "s",
+                DECL.tool,
+                fingerprint(DECL, {"to": "b@x.com"}, secret=NEW),
+                owner="B",
+                lease_seconds=30,
+                now=200.0,
+                secret_id=secret_id(NEW),
+                verify=diff,
+            )
+
+
+def test_rotation_leased_takeover_of_a_rotated_out_secret_is_loud(tmp_path: Path) -> None:
+    keyring = {secret_id(NEW): NEW}  # OLD rotated fully out
+    with SqliteLedger(tmp_path / "out.db", multi_worker=True) as led:
+        _old_signed_row(led, "k", EffectState.CLAIMED)
+        with pytest.raises(SchemeMismatch, match="rotated out of the window"):
+            led.claim_leased(
+                "k",
+                "s",
+                DECL.tool,
+                fingerprint(DECL, ARGS, secret=NEW),
+                owner="B",
+                lease_seconds=30,
+                now=200.0,
+                secret_id=secret_id(NEW),
+                verify=_leased_verify(ARGS, keyring, NEW),
+            )
 
 
 def test_no_rotation_window_is_byte_identical_behavior(tmp_path: Path) -> None:
