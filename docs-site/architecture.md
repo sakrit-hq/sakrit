@@ -74,6 +74,31 @@ directly with `key=`, that is ground truth and the adapter's positional guess mu
 
 > Where identity cannot be established, the answer is a **loud refusal**, not a wrong identity.
 
+### Where the business key comes from — and why not the arguments
+
+Rung 3 is worth dwelling on, because "give the effect a key" invites a wrong instinct: *derive the key
+from the arguments.* Don't. The key answers **"which intent is this?"** — and the arguments can't
+answer that.
+
+- **A payload-hash key fails silently on a real repeat.** A customer legitimately buys the same $49.99
+  item twice today. Both calls have byte-identical arguments but are two genuinely different charges.
+  Keyed by `hash(customer, amount)`, the second is deduplicated as a "retry" of the first — the second
+  order is never charged, and nothing tells you. Silent wrong behavior on a money path, the exact
+  failure Sakrit exists to abolish.
+- **It fails open in the other direction too.** A retry recomputes the arguments and gets a slightly
+  different value (a price updated between attempts, a re-fetched rate, a timestamp). Now the retry of
+  the *same* intent hashes to a *new* key, looks fresh, and executes — a double charge.
+
+The key is derived from the **domain**, not the payload: `f"order-{order_id}-charge"`. That resolves
+both cases — the same order retried reuses the key and dedups; a genuinely new order (or a deliberate
+`order-8841-charge-2` for a second charge on one order) gets a new key and fires. The `IDENTITY`
+arguments are not the *source* of identity; they are the **cross-check** on it: same key must mean
+same identity args, so if a call arrives under an existing key with a different `amount_cents`, that's
+a bug wearing a retry's clothes and settle raises `DivergentRetry` — never a silent re-charge, never a
+silently-served stale result. **Key = which intent; identity args = proof it's that intent.** Same
+model as a provider's own idempotency keys (Stripe's included): caller-supplied, one per logical
+operation, never a payload hash.
+
 ## Framework-agnostic by construction
 
 `import sakrit` never imports a framework. The core knows only about coordinates, keys, and durable
