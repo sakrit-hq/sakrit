@@ -270,13 +270,28 @@ def test_null_byte_source_is_a_loud_finding_not_a_crash() -> None:
     assert "NOT verified" in findings[0].message
 
 
-def test_deeply_nested_source_is_a_loud_finding_not_a_crash() -> None:
-    # F-4.2: a pathologically deep expression exhausts the recursion limit — in ast.parse on some
-    # Python versions (3.11-3.13), in the visitor on others (3.10/3.14). Either way the doctor must
-    # degrade to a single loud SAKRIT000, never let RecursionError escape the CLI. Assert the
-    # version-robust property (one SAKRIT000, "NOT verified"), not the exact wording.
-    deep = "x = " + "1+" * 20000 + "1\n"
-    findings = scan_source(deep, "generated.py")  # must not raise on any supported Python
+def _raise_recursion(*_a: object, **_k: object) -> object:
+    raise RecursionError("maximum recursion depth exceeded")
+
+
+def test_recursionerror_from_parse_degrades_to_finding(monkeypatch: pytest.MonkeyPatch) -> None:
+    # F-4.2: a pathologically deep file exhausts the recursion limit *inside ast.parse* on some
+    # Python versions (3.11-3.13). The doctor must degrade to a loud SAKRIT000, not let it escape.
+    # Forced deterministically — a real 20k-deep expression destabilizes the interpreter itself
+    # (raises mid-C-construction on some versions, hangs tearing the AST down on others), which is
+    # about CPython, not our handler.
+    import ast
+
+    monkeypatch.setattr(ast, "parse", _raise_recursion)  # doctor calls ast.parse
+    findings = scan_source("x = 1\n", "deep.py")
+    assert [f.code for f in findings] == [PARSE_FAILURE]
+    assert "NOT verified" in findings[0].message
+
+
+def test_recursionerror_from_walk_degrades_to_finding(monkeypatch: pytest.MonkeyPatch) -> None:
+    # ...and on other versions (3.10/3.14) the deep walk is what overflows. Same requirement.
+    monkeypatch.setattr("sakrit.doctor._Scanner.visit", _raise_recursion)
+    findings = scan_source("import requests\nrequests.post(u)\n", "deep2.py")
     assert [f.code for f in findings] == [PARSE_FAILURE]
     assert "NOT verified" in findings[0].message
 
