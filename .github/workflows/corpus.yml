@@ -1,0 +1,39 @@
+name: Doctor corpus
+
+# Runs `sakrit doctor` over a pinned set of real OSS agent repos (tests/corpus/manifest.json).
+# The bar is CRASH-FREE (roadmap Stage 2 · Phase 0 · deliverable 5). Network-bound (it clones the
+# pinned repos), so it is NOT a per-PR merge gate — instead it runs on demand, on a daily schedule
+# as ongoing proof, and whenever the doctor itself changes on main (the regression catch).
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 6 * * *" # daily, 06:30 UTC (just after the chaos run)
+  push:
+    branches: [main]
+    paths:
+      - "src/sakrit/doctor.py"
+      - "tests/corpus/**"
+
+jobs:
+  corpus:
+    name: doctor is crash-free on real repos
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Sync dependencies
+        run: uv sync --locked --dev
+
+      - name: Run the corpus (crash-free is the bar)
+        run: uv run pytest tests/corpus -m corpus -v
+
+      - name: Print the noise-floor report
+        if: always()
+        run: uv run python tests/corpus/harness.py

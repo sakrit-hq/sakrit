@@ -1,5 +1,10 @@
 # Sakrit
 
+[![CI](https://github.com/nagaraju-oruganti/sakrit/actions/workflows/ci.yml/badge.svg)](https://github.com/nagaraju-oruganti/sakrit/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/sakrit.svg)](https://pypi.org/project/sakrit/)
+[![Python](https://img.shields.io/pypi/pyversions/sakrit.svg)](https://pypi.org/project/sakrit/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
 **Exactly-once effects for AI agents.**
 
 Sakrit is a thin, framework-agnostic layer that sits between an AI agent and the
@@ -12,6 +17,10 @@ in parallel.
 > resume. They did **not** solve *idempotent side effects*. When an agent resumes
 > from a save point, it re-runs steps it already completed. The save point rewinds
 > the agent but not the world. Sakrit closes that gap.
+
+**No telemetry, ever.** The library phones nowhere — `import sakrit` opens no network
+connection and imports no framework. It talks only to endpoints you configure, when you
+call the code that uses them.
 
 ## Quickstart
 

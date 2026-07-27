@@ -1,0 +1,25 @@
+{
+  "description": "Pinned real-world OSS agent repos for the doctor corpus test (roadmap Stage 2 · Phase 0 · deliverable 5). The bar is CRASH-FREE: the doctor must scan every file without raising (a parse/decode failure is a loud SAKRIT000 finding, never an escaped exception). Finding density is recorded to tune the noise floor before launch. Repos are pinned at a fixed SHA for reproducibility; refresh deliberately, never silently.",
+  "repos": [
+    {
+      "repo": "openai/openai-agents-python",
+      "sha": "a2d82707d94bfcf2ffbcc62ea9746c5fb183804f",
+      "note": "OpenAI Agents SDK — a directly-adapted framework"
+    },
+    {
+      "repo": "langchain-ai/langgraph",
+      "sha": "30c4d58db86455128e42ddec96b1ba53c553ba22",
+      "note": "LangGraph — a directly-adapted framework; large, diverse Python (parser stress)"
+    },
+    {
+      "repo": "crewAIInc/crewAI",
+      "sha": "daa7019898ae52d30005478f436b7a5a808e2814",
+      "note": "CrewAI — a framework we do not adapt (non-ship verdict); scanned for robustness"
+    },
+    {
+      "repo": "pydantic/pydantic-ai",
+      "sha": "ed0f40c0e5061722f7d9f579ed7efff1b74e3ea5",
+      "note": "Pydantic AI — an agent framework with real HTTP/provider calls"
+    }
+  ]
+}

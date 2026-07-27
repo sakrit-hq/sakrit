@@ -308,11 +308,18 @@ class SqliteLedger:
         which the scheme check treats as 'unknown', never a false mismatch)."""
         row = self.conn.execute("SELECT v FROM sakrit_meta WHERE k = 'schema_version'").fetchone()
         if row is None:
+            # Idempotent under concurrent first-open: two connections opening one fresh DB both
+            # see no row; a plain INSERT makes the loser hit UNIQUE(sakrit_meta.k). OR IGNORE lets
+            # it proceed, then we re-read the row the winner wrote and run the version check on it.
             self.conn.execute(
-                "INSERT INTO sakrit_meta (k, v) VALUES ('schema_version', ?)",
+                "INSERT OR IGNORE INTO sakrit_meta (k, v) VALUES ('schema_version', ?)",
                 (str(_SCHEMA_VERSION),),
             )
-            return
+            row = self.conn.execute(
+                "SELECT v FROM sakrit_meta WHERE k = 'schema_version'"
+            ).fetchone()
+            if row is None:  # defensive: still absent (shouldn't happen) — treat as fresh
+                return
         on_disk = int(row[0])
         if on_disk > _SCHEMA_VERSION:
             raise SakritError(
@@ -399,7 +406,20 @@ class SqliteLedger:
         if self._path == ":memory:":
             return
         if i_accept_data_loss:
-            self.conn.execute("PRAGMA synchronous=OFF")  # fast, unsafe — explicitly opted in
+            # WAL + synchronous=NORMAL: process-crash-safe, NOT power-loss-safe. fsync batches to
+            # WAL checkpoints instead of firing every commit, so it's meaningfully faster than the
+            # FULL default — and, because WAL avoids the per-transaction rollback-journal
+            # create/delete, faster than a naive synchronous=OFF on a DELETE journal too.
+            # The flag name means "I accept the *power-loss* risk" — which is exactly NORMAL, not
+            # OFF (a corrupt DB on a mere process crash), which a ledger must not silently hand you.
+            self._set_wal_with_retry()
+            self.conn.execute("PRAGMA synchronous=NORMAL")
+            sync = self.conn.execute("PRAGMA synchronous").fetchone()[0]
+            if sync != 1:  # NORMAL == 1
+                raise SakritError(
+                    f"could not set synchronous=NORMAL (got {sync}) — process-crash durability "
+                    "is not guaranteed."
+                )
             return
         # WAL + FULL: durable against a process crash *and* power loss. (WAL+NORMAL
         # is process-crash-safe but not power-loss-safe — see fault_model.)
@@ -444,8 +464,10 @@ class SqliteLedger:
         sync = self.conn.execute("PRAGMA synchronous").fetchone()[0]
         journal = str(self.conn.execute("PRAGMA journal_mode").fetchone()[0]).upper()
         if sync == 0:
-            return "NONE (synchronous=OFF; i_accept_data_loss)"
-        if journal == "WAL" and sync == 1:  # NORMAL
+            # Not reachable via the constructor (i_accept_data_loss now means WAL+NORMAL, not OFF);
+            # kept as an honest report if synchronous=OFF is ever set out-of-band.
+            return "NONE (synchronous=OFF)"
+        if journal == "WAL" and sync == 1:  # NORMAL — i_accept_data_loss
             return "process-crash-safe (WAL+NORMAL); power-loss requires FULL"
         return "process-and-power-crash-safe (WAL+FULL)"
 

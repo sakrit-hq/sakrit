@@ -1,9 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """The ``sakrit`` console entry point.
 
-- ``sakrit doctor [PATH …] [--check]`` — the static unguarded-consequential-call
-  net (see :mod:`sakrit.doctor`). Plain mode prints findings and exits 0 (a
-  report); ``--check`` exits 1 on any finding (a CI gate).
+- ``sakrit doctor [PATH …] [--check] [--format text|json|sarif] [-o FILE]`` — the
+  static unguarded-consequential-call net (see :mod:`sakrit.doctor`). Report mode
+  prints findings and exits 0; ``--check`` exits 1 on any finding (a CI gate);
+  exit 2 is a usage error. ``--format`` selects text (default), the
+  ``sakrit.doctor/1`` JSON envelope, or SARIF 2.1.0 (for GitHub code-scanning PR
+  annotations). ``--check`` affects only the exit code, never the output. The exit
+  codes and the JSON/SARIF shapes are a frozen contract — see
+  docs/dev-notes/stage2-cloud/phase0/doctor-output-contract.md.
 - ``sakrit audit LEDGER [filters] [--format json|csv] [-o FILE]`` — export the
   settled-effect history, provenance included (see :mod:`sakrit.audit`).
   Read-only by construction (``mode=ro`` connection).
@@ -12,12 +17,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 
 from sakrit.__about__ import __version__
-from sakrit.doctor import scan_paths
+from sakrit.doctor import Finding, findings_to_json, findings_to_sarif, scan_paths
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -40,6 +46,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     doctor.add_argument("paths", nargs="*", type=Path, help="files or directories (default: .)")
     doctor.add_argument("--check", action="store_true", help="exit nonzero on any finding (for CI)")
+    doctor.add_argument(
+        "--format",
+        choices=("text", "json", "sarif"),
+        default="text",
+        dest="fmt",
+        help="output format: text (default), json (sakrit.doctor/1), or sarif (2.1.0)",
+    )
+    doctor.add_argument("-o", "--output", type=Path, help="write to a file (default: stdout)")
 
     audit = sub.add_parser(
         "audit",
@@ -62,7 +76,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     if args.command == "doctor":
-        return _run_doctor(args.paths or [Path()], check=args.check)
+        return _run_doctor(
+            args.paths or [Path()], check=args.check, fmt=args.fmt, output=args.output
+        )
     if args.command == "audit":
         return _run_audit(args)
     parser.error(f"unknown command {args.command!r}")  # unreachable: subparsers validate
@@ -70,16 +86,40 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 2
 
 
-def _run_doctor(paths: list[Path], *, check: bool) -> int:
+def _run_doctor(
+    paths: list[Path], *, check: bool, fmt: str = "text", output: Path | None = None
+) -> int:
     findings, scanned = scan_paths(paths)
-    for finding in findings:
-        print(finding.render())
+    body = _render_doctor(findings, scanned, fmt=fmt)
+    if output is not None:
+        try:
+            output.write_text(body + "\n", encoding="utf-8")
+        except OSError as exc:
+            # A failed -o write must not masquerade as "1 = findings found" (a CI consumer would
+            # misread it): report the write error loudly and exit 2 (usage/environment error).
+            print(f"sakrit doctor: could not write {output}: {exc}", file=sys.stderr)
+            return 2
+    else:
+        print(body)
+    # The exit code is independent of --format; --check is the only thing that turns findings
+    # into a nonzero exit (the doctor-output-contract note). A file that could not be verified
+    # (SAKRIT000) is a finding, so it fails --check too.
+    return 1 if (findings and check) else 0
+
+
+def _render_doctor(findings: list[Finding], scanned: int, *, fmt: str) -> str:
+    if fmt == "json":
+        return json.dumps(findings_to_json(findings, scanned, version=__version__), indent=2)
+    if fmt == "sarif":
+        return json.dumps(findings_to_sarif(findings, version=__version__), indent=2)
+    # text (default): findings, one per line, then a one-line summary.
     noun = "file" if scanned == 1 else "files"
+    lines = [f.render() for f in findings]
     if findings:
-        print(f"sakrit doctor: {len(findings)} finding(s) in {scanned} {noun} scanned.")
-        return 1 if check else 0
-    print(f"sakrit doctor: no findings in {scanned} {noun} scanned.")
-    return 0
+        lines.append(f"sakrit doctor: {len(findings)} finding(s) in {scanned} {noun} scanned.")
+    else:
+        lines.append(f"sakrit doctor: no findings in {scanned} {noun} scanned.")
+    return "\n".join(lines)
 
 
 def _run_audit(args: argparse.Namespace) -> int:

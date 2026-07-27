@@ -14,10 +14,11 @@ from collections.abc import Callable
 from typing import TypeVar
 
 from sakrit.__about__ import __version__
-from sakrit.core import EffectDecl, Metrics, SqliteLedger, current_key
+from sakrit.core import ArgClass, EffectDecl, Metrics, SqliteLedger, current_key
 from sakrit.engine import Sakrit
 
 __all__ = [
+    "ArgClass",
     "EffectDecl",
     "Metrics",
     "Sakrit",

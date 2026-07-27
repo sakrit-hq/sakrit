@@ -10,23 +10,20 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
-    name: lint + unit (py${{ matrix.python-version }})
+  lint:
+    name: lint + types
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.12"
 
       - name: Sync dependencies
-        run: uv sync --all-extras --dev
+        run: uv sync --locked --all-extras --dev
 
       - name: Ruff (lint)
         run: uv run ruff check .
@@ -37,12 +34,37 @@ jobs:
       - name: Mypy (types)
         run: uv run mypy
 
+  test:
+    # P0 install matrix: py3.10–3.14 × macOS/Linux. Version-specific failures are
+    # real and invisible locally (the py3.14 heartbeat bug), and the durability layer
+    # leans on POSIX flock + fsync semantics that differ across OSes — so both axes
+    # are load-bearing, not box-ticking.
+    name: unit (py${{ matrix.python-version }} · ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Sync dependencies
+        run: uv sync --locked --all-extras --dev
+
       - name: Pytest (unit)
         run: uv run pytest tests/unit -m "not chaos"
 
   chaos:
     name: exactly-once under crashes (merge gate)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -52,7 +74,7 @@ jobs:
           python-version: "3.12"
 
       - name: Sync dependencies
-        run: uv sync --all-extras --dev
+        run: uv sync --locked --all-extras --dev
 
       # P2-7: the kill-at-every-boundary matrix is "the do-not-launch gate" — so it must
       # actually gate. It runs here on every PR (fast: subprocess kills over a temp DB),
@@ -61,8 +83,9 @@ jobs:
         run: uv run pytest tests/chaos -m chaos
 
   integration:
-    name: adapter conformance + demo (LangGraph)
+    name: adapter conformance + demo + quickstarts
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -71,10 +94,11 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Sync dependencies (with the langgraph extra)
-        run: uv sync --extra langgraph --dev
+      - name: Sync dependencies (both framework extras)
+        run: uv sync --locked --extra langgraph --extra openai-agents --dev
 
-      # Gates the LangGraph adapter: call_site (checkpoint_ns) must be byte-stable
-      # across resume and unique per step, and the guarded demo must send once.
+      # Gates the adapters (call_site byte-stable across resume, unique per step) AND runs the
+      # docs quickstarts verbatim (tests/integration/test_quickstarts.py) so the copy-paste code
+      # on the docs site can't rot. Both extras are installed so no framework quickstart skips.
       - name: Pytest (integration)
         run: uv run pytest tests/integration -m integration

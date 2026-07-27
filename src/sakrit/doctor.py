@@ -34,20 +34,55 @@ Fail-closed reporting: a file that cannot be parsed or decoded is a loud
 from __future__ import annotations
 
 import ast
+import hashlib
 import io
 import re
 import tokenize
+import warnings
 from collections import Counter
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
-__all__ = ["Finding", "scan_path", "scan_paths", "scan_source"]
+__all__ = [
+    "DOCTOR_JSON_SCHEMA",
+    "RULES",
+    "Finding",
+    "findings_to_json",
+    "findings_to_sarif",
+    "scan_path",
+    "scan_paths",
+    "scan_source",
+]
 
 # SAKRIT000 — the file was not scanned (parse/decode failure): not verified, loud.
 # SAKRIT001 — an unguarded consequential call.
 PARSE_FAILURE = "SAKRIT000"
 UNGUARDED_CALL = "SAKRIT001"
+
+# Frozen JSON envelope version (part of the P0 interface freeze — see
+# docs/dev-notes/stage2-cloud/phase0/doctor-output-contract.md). Additive-only within the major.
+DOCTOR_JSON_SCHEMA = "sakrit.doctor/1"
+
+# The rule catalog. `level` uses the SARIF vocabulary (error | warning | note) so the JSON
+# `severity` and the SARIF `level` agree. Frozen; new rules are additive.
+RULES: dict[str, dict[str, str]] = {
+    PARSE_FAILURE: {
+        "name": "FileNotVerified",
+        "level": "error",
+        "short": "A source file could not be parsed, read, or found, so it was not verified.",
+    },
+    UNGUARDED_CALL: {
+        "name": "UnguardedConsequentialCall",
+        "level": "warning",
+        "short": "A consequential-looking call is not lexically under a Sakrit guard.",
+    },
+}
+
+# Carried in the SARIF driver metadata. T-ORG: update on the org move (the `nagaraju-oruganti`
+# grep in the migration checklist catches it).
+_INFORMATION_URI = "https://github.com/nagaraju-oruganti/sakrit"
 
 # Matched against real COMMENT tokens only (never raw source), so the marker text inside a
 # string literal is inert. ``safe`` excludes ``safe-file`` (negative lookahead) so the two
@@ -371,8 +406,19 @@ def scan_source(source: str, path: str = "<string>") -> list[Finding]:
     whole_file_safe, safe_lines = _marker_lines(source)  # real comments only (A-6/A-7)
     if whole_file_safe:
         return []  # the whole module is reviewed effect-machinery — opted out explicitly
+    # One guard over BOTH the parse and the walk. A pathologically deep expression (a minified or
+    # generated file) can exhaust the recursion limit in *either* place depending on the Python
+    # version — ast.parse raises RecursionError on 3.11-3.13, the visitor does on 3.10/3.14. Catch
+    # it wherever it fires so "crash-free" is a property of the code, not the interpreter version.
+    # The RecursionError handler does minimal stack work (build one Finding) before returning.
     try:
-        tree = ast.parse(source)
+        # Suppress warnings the *scanned* code would emit (e.g. a legacy invalid escape sequence):
+        # the doctor must not spew the target's SyntaxWarnings into its own output.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            tree = ast.parse(source)
+        scanner = _Scanner(path, _FileFacts(tree), safe_lines)
+        scanner.visit(tree)
     except SyntaxError as exc:
         return [
             Finding(
@@ -383,8 +429,20 @@ def scan_source(source: str, path: str = "<string>") -> list[Finding]:
                 message=f"could not parse — file NOT verified: {exc.msg}",
             )
         ]
-    scanner = _Scanner(path, _FileFacts(tree), safe_lines)
-    scanner.visit(tree)
+    except (ValueError, RecursionError) as exc:
+        # ValueError: null bytes and a few other malformed inputs (ast.parse raises it, not
+        # SyntaxError). RecursionError: pathological nesting. Either way — not verified, still loud,
+        # never an escaped crash.
+        detail = "too deeply nested to scan" if isinstance(exc, RecursionError) else str(exc)
+        return [
+            Finding(
+                path=path,
+                line=1,
+                col=0,
+                code=PARSE_FAILURE,
+                message=f"could not parse — file NOT verified: {detail}",
+            )
+        ]
     return sorted(scanner.findings, key=lambda f: (f.line, f.col))
 
 
@@ -435,7 +493,133 @@ def scan_paths(paths: Iterable[Path]) -> tuple[list[Finding], int]:
                 )
             )
             continue
+        scanned_before = scanned
         for file in _iter_py_files(root):
             scanned += 1
             findings.extend(scan_path(file))
+        if scanned == scanned_before:
+            # Fail closed: an existing root that yielded no .py files (an emptied dir after a
+            # rename, a non-.py file passed by mistake) is the SAME threat as a typo'd path —
+            # "you told me to check this and I verified nothing." Loud SAKRIT000, not silent pass.
+            findings.append(
+                Finding(
+                    path=str(root),
+                    line=1,
+                    col=0,
+                    code=PARSE_FAILURE,
+                    message="no Python files found here — nothing was verified",
+                )
+            )
     return findings, scanned
+
+
+# -- machine-readable output (frozen shapes; see the doctor-output-contract note) ----------
+
+
+def _severity(code: str) -> str:
+    """The SARIF/JSON level for a rule; unknown codes degrade to ``warning``, never crash."""
+    return RULES.get(code, {}).get("level", "warning")
+
+
+def _display_path(path: str) -> str:
+    """Repo-relative, forward-slash path for machine output. An absolute path *under the current
+    directory* — the common ``sakrit doctor $GITHUB_WORKSPACE/src`` CI habit — is relativized so
+    GitHub code scanning can map the finding to a file; anything else is left as-is, posix-form.
+    (Value-level, so it is a pre-freeze decision — see the doctor-output-contract note.)"""
+    p = Path(path)
+    if p.is_absolute():
+        try:
+            # resolve() both sides so a symlinked working dir (macOS /tmp → /private/tmp) still
+            # relativizes instead of silently falling through to an absolute path.
+            return p.resolve().relative_to(Path.cwd().resolve()).as_posix()
+        except (ValueError, OSError):
+            return p.as_posix()
+    return p.as_posix()
+
+
+def _finding_fingerprint(f: Finding) -> str:
+    """A stable partial fingerprint for SARIF alert-tracking. Deliberately excludes the line number
+    so GitHub does not churn (close+reopen) alerts when code merely shifts; keyed on rule + relative
+    file + the flagged call shape (which the message carries)."""
+    basis = f"{f.code}\x00{_display_path(f.path)}\x00{f.message}"
+    return hashlib.sha256(basis.encode("utf-8")).hexdigest()[:16]
+
+
+def findings_to_json(
+    findings: list[Finding], files_scanned: int, *, version: str
+) -> dict[str, Any]:
+    """The ``sakrit.doctor/1`` JSON envelope as a plain dict (serialized by the CLI).
+
+    ``col`` is 0-based (matches the text ``render()`` and the AST ``col_offset``)."""
+    return {
+        "schema": DOCTOR_JSON_SCHEMA,
+        "tool": {"name": "sakrit doctor", "version": version},
+        "summary": {"files_scanned": files_scanned, "findings": len(findings)},
+        "findings": [
+            {
+                "code": f.code,
+                "severity": _severity(f.code),
+                "message": f.message,
+                "path": _display_path(f.path),
+                "line": f.line,
+                "col": f.col,
+            }
+            for f in findings
+        ],
+    }
+
+
+def findings_to_sarif(findings: list[Finding], *, version: str) -> dict[str, Any]:
+    """A valid SARIF 2.1.0 log as a plain dict (serialized by the CLI).
+
+    The full rule catalog is always emitted (even with zero results) so GitHub code scanning
+    knows the ruleset. SARIF columns are 1-based, so ``startColumn = col + 1``."""
+    rule_ids = list(RULES)  # stable insertion order → stable ruleIndex
+    rule_index = {rid: i for i, rid in enumerate(rule_ids)}
+    rules = [
+        {
+            "id": rid,
+            "name": RULES[rid]["name"],
+            "shortDescription": {"text": RULES[rid]["short"]},
+            "defaultConfiguration": {"level": RULES[rid]["level"]},
+        }
+        for rid in rule_ids
+    ]
+    results = []
+    for f in findings:
+        result: dict[str, Any] = {
+            "ruleId": f.code,
+            "level": _severity(f.code),
+            "message": {"text": f.message},
+            # Emitted in v1 (not omit-then-add, which would churn every consumer's alerts the day
+            # we first supply it). Line-number-free so alerts survive code shifts.
+            "partialFingerprints": {"sakritFindingV1": _finding_fingerprint(f)},
+            "locations": [
+                {
+                    "physicalLocation": {
+                        "artifactLocation": {"uri": _display_path(f.path)},
+                        "region": {"startLine": f.line, "startColumn": f.col + 1},
+                    }
+                }
+            ],
+        }
+        if f.code in rule_index:  # omit ruleIndex for an unknown code, don't point it at rule 0
+            result["ruleIndex"] = rule_index[f.code]
+        results.append(result)
+    return {
+        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [
+            {
+                "tool": {
+                    "driver": {
+                        "name": "sakrit-doctor",
+                        "informationUri": _INFORMATION_URI,
+                        "version": version,
+                        "rules": rules,
+                    }
+                },
+                "results": results,
+            }
+        ],
+    }

@@ -1,0 +1,56 @@
+name: Docs
+
+# Build the public docs site (docs-site/ via MkDocs Material). Every PR gets a strict build so a
+# broken link or a missing quickstart-snippet include fails CI. Pushes to main deploy to GitHub Pages
+# (enable Pages in repo settings first — relevant once the repo is public at launch).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - "docs-site/**"
+      - "mkdocs.yml"
+      - "examples/quickstarts/**"
+      - ".github/workflows/docs.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: mkdocs build --strict
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Sync docs deps
+        run: uv sync --locked --group docs
+      - name: Build (strict — broken links fail)
+        run: uv run mkdocs build --strict
+      - name: Upload Pages artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    name: deploy to GitHub Pages
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,30 @@
+name: Feature request
+description: Suggest a capability or an adapter.
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Sakrit deliberately keeps a narrow surface — new surface is new risk. The most persuasive
+        requests describe a **real workflow that's blocked today**, not a capability in the abstract.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do that Sakrit can't support today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What would you like Sakrit to do? Sketch the API/CLI if you have one in mind.
+    validations:
+      required: false
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you've considered
+      description: Workarounds you're using now, or other libraries you looked at.
+    validations:
+      required: false

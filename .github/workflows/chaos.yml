@@ -13,6 +13,7 @@ jobs:
   chaos:
     name: exactly-once under crashes
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -22,7 +23,7 @@ jobs:
           python-version: "3.12"
 
       - name: Sync dependencies
-        run: uv sync --all-extras --dev
+        run: uv sync --locked --all-extras --dev
 
       - name: Pytest (chaos)
         run: uv run pytest tests/chaos -m chaos
