@@ -72,8 +72,38 @@ def test_naive_datetime_filter_refuses(ledger_db: Path) -> None:
 
 
 def test_missing_ledger_refuses(tmp_path: Path) -> None:
-    with pytest.raises(SakritError, match="no ledger"):
+    from sakrit.audit import AuditLedgerNotFound
+
+    with pytest.raises(AuditLedgerNotFound, match="no ledger"):  # typed (A-9)
         AuditQuery(tmp_path / "nope.db")
+
+
+def test_string_time_filter_that_is_not_iso_refuses(ledger_db: Path) -> None:
+    # A-5: a non-ISO string must fail closed, not silently match nothing ("all clear").
+    with AuditQuery(ledger_db) as q, pytest.raises(SakritError, match="not ISO-8601"):
+        list(q.rows(since="yesterday"))
+
+
+def test_naive_string_time_filter_refuses(ledger_db: Path) -> None:
+    # A-5: a tz-less ISO string is refused too (would shift the window).
+    with AuditQuery(ledger_db) as q, pytest.raises(SakritError, match="timezone-aware"):
+        list(q.rows(since="2026-01-01T00:00:00"))
+
+
+def test_z_suffix_string_filter_is_accepted_and_normalized(ledger_db: Path) -> None:
+    # A-5: a ...Z spelling compares identically to the stored +00:00 form.
+    with AuditQuery(ledger_db) as q:
+        assert len(list(q.rows(since="1970-01-01T00:00:00Z"))) == 3
+
+
+def test_newer_schema_version_is_refused(ledger_db: Path) -> None:
+    # A-4: the read-only compliance surface must refuse a future format, like the writer does.
+    con = sqlite3.connect(ledger_db)
+    con.execute("UPDATE sakrit_meta SET v = '999' WHERE k = 'schema_version'")
+    con.commit()
+    con.close()
+    with pytest.raises(SakritError, match="newer than this Sakrit"):
+        AuditQuery(ledger_db)
 
 
 def test_audit_works_against_a_live_ledger(tmp_path: Path) -> None:
