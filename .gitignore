@@ -18,9 +18,6 @@ venv/
 .coverage
 htmlcov/
 
-# uv
-uv.lock
-
 # OS / editor
 .DS_Store
 *.swp
@@ -33,3 +30,6 @@ uv.lock
 # Docs and research (kept local, not tracked)
 docs/
 research/
+
+# MkDocs build output (docs source is docs-site/, tracked)
+site/

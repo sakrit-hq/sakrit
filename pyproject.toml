@@ -42,17 +42,24 @@ openai-agents = [
 [project.scripts]
 sakrit = "sakrit.cli:main"
 
+# NOTE: repo will move to a `sakrit` GitHub org soon (tracked task T-ORG in
+# docs/dev-notes/stage2-cloud/phase0/questions-and-concerns.md). Update these,
+# the git remote, badges, and the PyPI trusted-publisher config in one sweep then.
 [project.urls]
-Homepage = "https://github.com/sakrit/sakrit"
-Documentation = "https://github.com/sakrit/sakrit#readme"
-Issues = "https://github.com/sakrit/sakrit/issues"
-Source = "https://github.com/sakrit/sakrit"
+Homepage = "https://github.com/nagaraju-oruganti/sakrit"
+Documentation = "https://github.com/nagaraju-oruganti/sakrit#readme"
+Issues = "https://github.com/nagaraju-oruganti/sakrit/issues"
+Source = "https://github.com/nagaraju-oruganti/sakrit"
 
 [dependency-groups]
 dev = [
     "pytest>=8",
     "ruff>=0.6",
     "mypy>=1.11",
+]
+docs = [
+    "mkdocs-material>=9.5",
+    "pymdown-extensions>=10",
 ]
 
 [tool.hatch.version]
@@ -63,16 +70,23 @@ packages = ["src/sakrit"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra"
+# --strict-markers: a typo'd marker (e.g. -m "choas") is an error, not a silent zero-select that
+# would quietly drop tests from the chaos merge gate.
+addopts = "-ra --strict-markers"
 markers = [
     "integration: touches real I/O (sqlite/postgres); slower",
     "chaos: Act III kill-at-every-boundary suite",
+    "corpus: runs the doctor over pinned real OSS repos (needs network; opt-in)",
 ]
 
 [tool.ruff]
 src = ["src", "tests"]
 line-length = 100
 target-version = "py310"
+# Keep ruff away from the docs site: it format-checks Python inside Markdown fenced blocks and
+# would rewrite the mkdocs snippet directive `--8<--` into `--8 < --`, silently breaking the
+# quickstart includes. The docs are prose + embedded (already-formatted) example files.
+extend-exclude = ["docs-site"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
@@ -84,7 +98,7 @@ strict = true
 # Integration tests drive a third-party framework dynamically (LangGraph's
 # heavily-overloaded invoke); chaos tests drive subprocesses + a durable fake
 # world. Neither is worth fighting under strict mode; both are verified by running.
-exclude = ["tests/integration/", "tests/chaos/"]
+exclude = ["tests/integration/", "tests/chaos/", "tests/corpus/"]
 
 [[tool.mypy.overrides]]
 module = ["langgraph.*"]
