@@ -18,6 +18,7 @@ from collections.abc import Mapping
 
 from sakrit.core.canonical import canonicalize
 from sakrit.core.declaration import EffectDecl
+from sakrit.core.normalizers import normalize
 
 # The fingerprint scheme id (HMAC-SHA256 over the v1 canonical form). Stamped onto each ledger
 # row (P5-3) so a change to *either* the HMAC construction or the canonicalizer is detectable —
@@ -40,6 +41,27 @@ def secret_id(secret: bytes) -> str:
 
 
 def fingerprint(decl: EffectDecl, named_args: Mapping[str, object], *, secret: bytes) -> str:
-    """HMAC-SHA256 over the canonicalized identity args of a call."""
+    """HMAC-SHA256 over the canonicalized identity args of a call.
+
+    A declared SED normalizer is applied to an identity arg *before* canonicalization, so
+    incidental variation the author declared incidental (a trailing space, a mixed-case email)
+    does not trip ``DivergentRetry``. An arg with no normalizer is canonicalized byte-level
+    exactly as before — a normalizer-free decl is byte-identical to pre-normalizer fingerprints,
+    so the scheme id above does not change.
+
+    A normalizer is a ``str -> str`` transform, so it is applied **only to a string value**; a
+    non-string identity arg (an ``int``, a structured value) is left untouched and canonicalized
+    by its type as usual. This preserves the type distinction the canonicalizer makes — ``int 1``
+    and ``str "1"`` stay distinct even under a declared normalizer, never colliding onto one
+    identity — and a structured value never gets coerced to a bogus normalized string."""
     identity = decl.identity_args(named_args)
+    if decl.normalizers:
+        identity = {
+            k: (
+                normalize(decl.normalizers[k], v)
+                if k in decl.normalizers and isinstance(v, str)
+                else v
+            )
+            for k, v in identity.items()
+        }
     return hmac.new(secret, canonicalize(identity), hashlib.sha256).hexdigest()

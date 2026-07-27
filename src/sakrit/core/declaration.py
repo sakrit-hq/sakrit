@@ -56,6 +56,13 @@ class EffectDecl:
     tool: str
     classes: Mapping[str, ArgClass] = field(default_factory=dict)
     default: ArgClass = ArgClass.IDENTITY
+    normalizers: Mapping[str, str] = field(default_factory=dict)
+    """Per-arg SED builtin normalizer names (arg name → ``trim`` / ``email`` / …), applied to
+    an identity arg's value *before* it is fingerprinted (SED ``args.<name>.normalize``). An
+    arg with no entry is fingerprinted byte-level (the default), so a decl that declares no
+    normalizer produces byte-identical fingerprints to before this field existed. Declaring or
+    changing a normalizer is an identity-affecting change: it surfaces as a ``DivergentRetry``
+    a human resolves, never a silent change of dedup behavior (``docs/spec.md``)."""
     provider_key_param: str | None = None
     clean_failures: tuple[type[BaseException], ...] = ()
     """Exception types the author asserts imply the effect did NOT execute (e.g.

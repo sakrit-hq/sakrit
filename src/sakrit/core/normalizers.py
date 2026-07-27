@@ -6,6 +6,12 @@ A normalizer is a pure ``str -> str`` transform applied to an identity-bearing a
 trailing space, a mixed-case email) share one identity instead of tripping a spurious
 ``DivergentRetry``. These are the SED ``args.<name>.normalize`` builtins (``docs/spec.md``).
 
+**They live in the core, not in ``sakrit.spec``.** A normalizer changes what a *fingerprint*
+means — it is a moat primitive the fingerprint consumes — so the core owns it and the SED
+format layer references it (``sakrit.spec`` re-exports these for the public format API). The
+core never imports the format; the dependency runs one way. This module imports only the
+standard library.
+
 **The contract is the vectors, not this code (Q15).** A Python ``email`` normalizer and a
 future Node ``email`` normalizer MUST produce identical output bytes, or a fingerprint
 shared across a Python agent and a TS agent guarding the same tool is meaningless. So the
@@ -25,9 +31,14 @@ from collections.abc import Callable
 from decimal import Decimal, InvalidOperation
 from urllib.parse import urlsplit, urlunsplit
 
+from sakrit.core.errors import SakritError
 
-class NormalizerError(ValueError):
-    """A value could not be normalized by the named builtin (e.g. non-numeric ``money``)."""
+
+class NormalizerError(SakritError):
+    """A value could not be normalized by the named builtin (e.g. non-numeric ``money``). A
+    :class:`~sakrit.core.errors.SakritError` so a bad declared value surfaces as a first-class,
+    catchable guard failure — raised while computing the fingerprint, before any ledger write,
+    so it never leaves an ambiguous leftover."""
 
 
 def _trim(s: str) -> str:

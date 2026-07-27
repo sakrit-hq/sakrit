@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from sakrit.spec.normalizers import NORMALIZER_NAMES, NormalizerError, normalize
+from sakrit.core.normalizers import NORMALIZER_NAMES, NormalizerError, normalize
 
 _VECTORS = json.loads(
     (Path(__file__).parent.parent / "fixtures" / "sed-normalizer-vectors.json").read_text()

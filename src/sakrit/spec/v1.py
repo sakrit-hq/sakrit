@@ -35,7 +35,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from sakrit.core.errors import SakritError
-from sakrit.spec.normalizers import NORMALIZER_NAMES
+from sakrit.core.normalizers import NORMALIZER_NAMES
 
 _log = logging.getLogger("sakrit.spec")
 
