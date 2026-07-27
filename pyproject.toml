@@ -33,6 +33,11 @@ langgraph = [
     "langgraph>=1,<2",
     "langgraph-checkpoint-sqlite>=3",
 ]
+openai-agents = [
+    # Pre-1.0: minors can break identity derivation — the conformance gate
+    # (tests/integration/test_openai_agents_conformance.py) is the adoption check.
+    "openai-agents>=0.18,<1.0",
+]
 
 [project.scripts]
 sakrit = "sakrit.cli:main"
