@@ -36,6 +36,16 @@ class LangGraphAdapter:
         thread = conf.get("thread_id")
         if ns is None or thread is None:
             return None
+        # A blank checkpoint_ns (or thread_id) cannot carry positional identity: an empty
+        # call_site is not unique per step, so *every* guarded call in the thread would
+        # collide onto one coordinate (scope + b"") — a silent swallow or DivergentRetry
+        # distinguished only by tool name (P4-3). Refuse it and fall to the ladder (an
+        # explicit key=, or a loud NoCoordinateError) rather than manufacture a colliding
+        # coordinate. No supported LangGraph (>=1.0,<2.0) emits "" inside a node — it is
+        # always "<node>:<uuid>", conformance-gated — but the guard is fail-safe if a version
+        # ever changes that (the signal to re-run the conformance suite before adopting it).
+        if not str(ns).strip() or not str(thread).strip():
+            return None
         return Coordinate(scope=str(thread), call_site=str(ns).encode("utf-8"))
 
     # --- ReservedAdapter (P5-4: semantics unfixed, not yet consumed). on_recovery was
