@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
+# sakrit: safe-file — this module IS the exactly-once machinery; its write SQL is the
+# guard itself, not a guarded effect (`sakrit doctor` would otherwise flag every row write).
 """The ledger — the durable write-ahead record of every effect.
 
 Answers "has this action already happened, and what did it return?" It is a

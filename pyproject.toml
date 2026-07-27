@@ -34,6 +34,9 @@ langgraph = [
     "langgraph-checkpoint-sqlite>=3",
 ]
 
+[project.scripts]
+sakrit = "sakrit.cli:main"
+
 [project.urls]
 Homepage = "https://github.com/sakrit/sakrit"
 Documentation = "https://github.com/sakrit/sakrit#readme"
