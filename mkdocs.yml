@@ -1,0 +1,69 @@
+site_name: Sakrit
+site_description: Exactly-once effects for AI agents.
+# T-ORG: update site_url / repo_url / edit_uri when the repo moves to the sakrit org.
+# site_url gives correct canonical links + a valid sitemap on GitHub Pages.
+site_url: https://nagaraju-oruganti.github.io/sakrit/
+repo_url: https://github.com/nagaraju-oruganti/sakrit
+repo_name: nagaraju-oruganti/sakrit
+copyright: Apache-2.0
+
+# The public docs live here — a tracked tree, deliberately separate from the gitignored,
+# local-only internal docs/ (planning, roadmap, audits). See phase0/questions-and-concerns C-4.
+docs_dir: docs-site
+site_dir: site
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: black
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: black
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - content.code.annotate
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.inlinehilite
+  - pymdownx.snippets:
+      # Resolve --8<-- includes from the repo root, so docs can embed the runnable
+      # quickstart scripts under examples/ verbatim (one source of truth).
+      base_path: ["."]
+      check_paths: true
+
+nav:
+  - Home: index.md
+  - The guarantee (L0–L3): guarantee.md
+  - Quickstart:
+      - Plain Python: quickstart/plain.md
+      - LangGraph: quickstart/langgraph.md
+      - OpenAI Agents SDK: quickstart/openai-agents.md
+  - Architecture: architecture.md
+  - SED — the tool-declaration format: sed.md
+  - Tooling:
+      - sakrit doctor: doctor.md
+      - sakrit audit: audit.md
+  - Assurance: assurance.md
+  - Performance: perf.md
+  - What Sakrit is not: what-sakrit-is-not.md
+  - No telemetry, ever: no-telemetry.md
