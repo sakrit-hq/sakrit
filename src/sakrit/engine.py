@@ -153,8 +153,21 @@ class Sakrit:
         # `verify_secrets` (the just-retired secrets) in a keyring so an in-flight row signed by
         # an old secret still verifies during the drain — no fleet-wide DivergentRetry storm on
         # rotation. Keyed by secret_id (the row's provenance pivot). Empty → the single-secret
-        # behavior (a plain byte-compare of fingerprints, unchanged). To rotate: deploy with
-        # secret=<new>, verify_secrets=(<old>,); once no row is signed by <old>, drop it.
+        # behavior (a plain byte-compare of fingerprints, unchanged).
+        #
+        # ROTATE IN TWO PHASES across a fleet (C-4). A one-shot flip to
+        # `secret=NEW, verify_secrets=(OLD,)` storms on any fleet that does not restart
+        # atomically: during a rolling deploy the not-yet-updated workers still sign OLD and
+        # carry no window, so they DivergentRetry on rows the updated workers signed NEW. Use a
+        # symmetric window so every worker verifies both secrets throughout the overlap:
+        #   phase 1 — deploy `secret=OLD, verify_secrets=(NEW,)` fleet-wide (still signs OLD;
+        #             now accepts NEW),
+        #   phase 2 — deploy `secret=NEW, verify_secrets=(OLD,)` fleet-wide (signs NEW; still
+        #             accepts OLD),
+        #   phase 3 — once no row is signed by OLD (drained), drop it: `secret=NEW`.
+        # A leased fleet must be fully on phase 1 before any worker enters phase 2, or an
+        # old-signed in-flight row a phase-2 worker takes over would (before C-1) have stranded;
+        # with C-1 it verifies, but the symmetric window is still the clean ordering.
         #
         # A legacy pre-P5-3 row (secret_id NULL) verifies against `secret` (the primary), since
         # it carries no provenance to route by — so drain NULL-provenance rows (or keep the

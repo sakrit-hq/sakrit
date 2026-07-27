@@ -18,10 +18,18 @@ The four events, and exactly what each counts:
   was surfaced for a human. Every transition into AMBIGUOUS routes through it.
 - ``failed``   — a **declared-clean failure** recorded FAILED (re-claimable). Both paths.
 
-**Coverage caveat (honest v1 scope):** counts are **per process** (an in-memory object — a
-multi-worker fleet aggregates each worker's snapshot), and a late-evidence *heal* of an
-AMBIGUOUS row (``accept_late_evidence``) is not re-counted as a fresh ``settled`` — it already
-counted as ``ambiguous`` when it surfaced.
+**Coverage caveat (honest v1 scope).** These are **event tallies, not row-state counts** — a
+row that transitioned twice contributes to two events. Concretely (C-3):
+
+- Counts are **per process** (an in-memory object — a multi-worker fleet aggregates each
+  worker's snapshot).
+- A late-evidence *heal* is not re-counted as a fresh ``settled``. Two shapes: an AMBIGUOUS row
+  healed to SUCCEEDED already counted ``ambiguous`` when it surfaced; and (V-11) a peer's
+  clean-failure that counted ``failed`` and was then corrected by the true executor's success
+  (``accept_late_evidence`` FAILED→SUCCEEDED) leaves that **landed** effect tallied
+  ``failed=1, settled=0``. So a nonzero ``failed`` can include effects that ultimately landed
+  under a contention race — read the counts as *events observed*, not as *current outcomes*; the
+  ledger rows are the source of truth for the latter (query them via the audit trail).
 """
 
 from __future__ import annotations
