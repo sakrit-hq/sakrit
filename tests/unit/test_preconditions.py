@@ -19,9 +19,11 @@ def test_file_ledger_is_durable_by_default(tmp_path: Path) -> None:
         assert led.fault_model() == "process-and-power-crash-safe (WAL+FULL)"
 
 
-def test_i_accept_data_loss_is_explicit_and_reported(tmp_path: Path) -> None:
+def test_i_accept_data_loss_is_wal_normal_process_crash_safe(tmp_path: Path) -> None:
+    # i_accept_data_loss opts into WAL+NORMAL: process-crash-safe, power-loss-unsafe (and the
+    # reported model is a *checked* pragma, not a hope). It is NOT synchronous=OFF.
     with SqliteLedger(tmp_path / "l.sqlite", i_accept_data_loss=True) as led:
-        assert "NONE" in led.fault_model()
+        assert led.fault_model() == "process-crash-safe (WAL+NORMAL); power-loss requires FULL"
 
 
 def test_memory_ledger_is_ephemeral() -> None:
