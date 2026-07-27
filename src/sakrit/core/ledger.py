@@ -308,11 +308,18 @@ class SqliteLedger:
         which the scheme check treats as 'unknown', never a false mismatch)."""
         row = self.conn.execute("SELECT v FROM sakrit_meta WHERE k = 'schema_version'").fetchone()
         if row is None:
+            # Idempotent under concurrent first-open: two connections opening one fresh DB both
+            # see no row; a plain INSERT makes the loser hit UNIQUE(sakrit_meta.k). OR IGNORE lets
+            # it proceed, then we re-read the row the winner wrote and run the version check on it.
             self.conn.execute(
-                "INSERT INTO sakrit_meta (k, v) VALUES ('schema_version', ?)",
+                "INSERT OR IGNORE INTO sakrit_meta (k, v) VALUES ('schema_version', ?)",
                 (str(_SCHEMA_VERSION),),
             )
-            return
+            row = self.conn.execute(
+                "SELECT v FROM sakrit_meta WHERE k = 'schema_version'"
+            ).fetchone()
+            if row is None:  # defensive: still absent (shouldn't happen) — treat as fresh
+                return
         on_disk = int(row[0])
         if on_disk > _SCHEMA_VERSION:
             raise SakritError(
