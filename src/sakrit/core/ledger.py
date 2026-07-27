@@ -619,16 +619,29 @@ class SqliteLedger:
             "WHERE key = ?",
             (EffectState.SUCCEEDED.value, encoded, marker, _now(), key),
         )
-        if self._metrics is not None:
-            self._metrics.record(SETTLED)  # single-worker fresh success
+        self._tally(SETTLED)  # single-worker fresh success
 
     def record_failure(self, key: str, error: BaseException) -> None:
         self.conn.execute(
             "UPDATE effects SET state = ?, error = ?, settled_at = ? WHERE key = ?",
             (EffectState.FAILED.value, f"{type(error).__name__}: {error}", _now(), key),
         )
-        if self._metrics is not None:
-            self._metrics.record(FAILED)  # single-worker declared-clean failure
+        self._tally(FAILED)  # single-worker declared-clean failure
+
+    def _tally(self, event: str) -> None:
+        """Record a metrics event, insulated (C-2). A raising ``Metrics`` override — the obvious
+        statsd/OTel push, which can fail when telemetry is down — must never break the ledger:
+        unwrapped, a raise inside ``claim_leased``'s ``BEGIN IMMEDIATE`` would roll back the
+        forbidden-takeover AMBIGUOUS transition (disabling the "…or tells you it couldn't"
+        guarantee while telemetry is down), and elsewhere would turn a durably-recorded success
+        into a caller-visible error. Same log-and-swallow discipline as the on_ambiguous/on_replay
+        hooks. No-op when no metrics object is configured."""
+        if self._metrics is None:
+            return
+        try:
+            self._metrics.record(event)
+        except Exception:  # noqa: BLE001 — telemetry must never break the ledger
+            logger.exception("sakrit: metrics.record(%r) raised; swallowed", event)
 
     def _transition(self, key: str, state: EffectState) -> None:
         self.conn.execute("UPDATE effects SET state = ? WHERE key = ?", (state.value, key))
@@ -724,8 +737,7 @@ class SqliteLedger:
         A misbehaving hook must not corrupt the ledger, so its exceptions are logged and
         swallowed — the row is already durably AMBIGUOUS regardless."""
         logger.warning("sakrit: effect %s is AMBIGUOUS (%s) — resolve it", key, reason)
-        if self._metrics is not None:
-            self._metrics.record(AMBIGUOUS)
+        self._tally(AMBIGUOUS)
         if self._on_ambiguous is not None:
             try:
                 self._on_ambiguous(key)
@@ -739,8 +751,7 @@ class SqliteLedger:
         operator, not silent. Fires the optional ``on_replay`` hook; a raising hook is
         logged and swallowed (a replay is not a failure)."""
         logger.info("sakrit: %s served a recorded result — effect not re-fired (replay)", key)
-        if self._metrics is not None:
-            self._metrics.record(REPLAYED)
+        self._tally(REPLAYED)
         if self._on_replay is not None:
             try:
                 self._on_replay(key)
@@ -982,11 +993,10 @@ class SqliteLedger:
         applied = cur.rowcount > 0
         if applied and state is EffectState.AMBIGUOUS:
             self._tell_ambiguous(key, "reconcile on takeover could not confirm the outcome")
-        elif applied and self._metrics is not None:  # leased success/failure (ambiguous counted
-            if state is EffectState.SUCCEEDED:  # by _tell_ambiguous above, so no double-count)
-                self._metrics.record(SETTLED)
-            elif state is EffectState.FAILED:
-                self._metrics.record(FAILED)
+        elif applied and state is EffectState.SUCCEEDED:  # leased success/failure (ambiguous
+            self._tally(SETTLED)  # counted by _tell_ambiguous above, so no double-count)
+        elif applied and state is EffectState.FAILED:
+            self._tally(FAILED)
         return applied
 
     def heartbeat(

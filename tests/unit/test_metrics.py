@@ -83,3 +83,43 @@ def test_snapshot_is_a_copy() -> None:
     snap = m.snapshot()
     snap["settled"] = 999  # mutating the snapshot must not corrupt the live counters
     assert m.snapshot()["settled"] == 0
+
+
+# --- C-2: a raising Metrics override must never break the ledger ----------------------
+class _RaisingMetrics(Metrics):
+    def record(self, event: str) -> None:  # the obvious statsd/OTel push, but the backend is down
+        raise ConnectionError("telemetry is down")
+
+
+def test_raising_metrics_does_not_fail_a_settled_effect() -> None:
+    # C-2 probe B: the effect ran and is durably SUCCEEDED; the caller must NOT see the error.
+    led = SqliteLedger(":memory:", metrics=_RaisingMetrics())
+    fired: list[str] = []
+
+    def send(to: str) -> str:
+        fired.append(to)
+        return "ok"
+
+    sk = Sakrit(led, secret=SECRET)
+    assert sk.guard(DECL, send, kwargs={"to": "a@x.com"}, key="k1") == "ok"  # no ConnectionError
+    assert fired == ["a@x.com"]
+    succeeded = list(led.keys_in(EffectState.SUCCEEDED))
+    assert len(succeeded) == 1 and led.state_of(succeeded[0]) is EffectState.SUCCEEDED
+
+
+def test_raising_metrics_does_not_roll_back_the_ambiguous_transition(tmp_path: Path) -> None:
+    # C-2 probe A (the serious one): _tell_ambiguous runs inside claim_leased's transaction.
+    # A raising metrics must not roll the forbidden-takeover AMBIGUOUS transition back to
+    # EXECUTING — the loud-surfacing half of the guarantee stays intact while telemetry is down.
+    led = SqliteLedger(tmp_path / "l.db", multi_worker=True, metrics=_RaisingMetrics())
+    try:
+        # An L0 row left EXECUTING by a presumed-dead owner (lease expired) → forbidden takeover.
+        c = led.claim_leased("k", "s", "t", "fp", owner="A", lease_seconds=30, now=100.0)
+        assert led.fence("k", c.fencing_token, EffectState.EXECUTING)
+        c2 = led.claim_leased("k", "s", "t", "fp", owner="B", lease_seconds=30, now=200.0)
+        from sakrit.core.ledger import ClaimKind
+
+        assert c2.kind is ClaimKind.AMBIGUOUS  # surfaced, not rolled back
+        assert led.state_of("k") is EffectState.AMBIGUOUS  # durably AMBIGUOUS despite the raise
+    finally:
+        led.close()

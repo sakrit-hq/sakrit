@@ -48,7 +48,12 @@ class Metrics:
 
     def record(self, event: str) -> None:
         """Tally one occurrence of ``event`` (thread-safe — the leased ledger heartbeats and
-        claims from different threads)."""
+        claims from different threads).
+
+        If you override this to push to statsd/OTel, note the ledger calls it inside a
+        write transaction: a raise here is **caught and swallowed** (logged) by the ledger so
+        telemetry being down can never roll back an effect transition or fail a settled call
+        (C-2) — so a push that must not be lost should buffer/retry, not rely on this call."""
         with self._lock:
             self._counts[event] += 1
 
