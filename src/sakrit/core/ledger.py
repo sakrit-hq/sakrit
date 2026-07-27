@@ -47,6 +47,7 @@ from sakrit.core.errors import (
 )
 from sakrit.core.fingerprint import FINGERPRINT_VERSION
 from sakrit.core.keys import KEY_VERSION
+from sakrit.core.metrics import AMBIGUOUS, FAILED, REPLAYED, SETTLED, Metrics
 from sakrit.core.seams import seam
 
 logger = logging.getLogger("sakrit")
@@ -180,6 +181,7 @@ class SqliteLedger:
         owner: str | None = None,
         on_ambiguous: Callable[[str], None] | None = None,
         on_replay: Callable[[str], None] | None = None,
+        metrics: Metrics | None = None,
     ) -> None:
         self._path = str(path)
         self._lock_fd: int | None = None
@@ -207,6 +209,9 @@ class SqliteLedger:
         # routine on resume/retry — but it must be *told*, so an operator asking "why didn't
         # the repeat fire?" finds the answer. Logged at INFO; fires this optional hook.
         self._on_replay = on_replay
+        # #21: an optional per-process tally of terminal outcomes (settled/replayed/ambiguous/
+        # failed). Recorded at the same chokepoints as the hooks above; None → no tallying.
+        self._metrics = metrics
         # P3-3: multi-worker coordination is *between* workers over one shared database.
         # An in-memory DB is private to its connection, so N multi-worker processes would
         # get N isolated ledgers — zero dedup, N× execution, silently. Refuse it.
@@ -594,12 +599,16 @@ class SqliteLedger:
             "WHERE key = ?",
             (EffectState.SUCCEEDED.value, encoded, marker, _now(), key),
         )
+        if self._metrics is not None:
+            self._metrics.record(SETTLED)  # single-worker fresh success
 
     def record_failure(self, key: str, error: BaseException) -> None:
         self.conn.execute(
             "UPDATE effects SET state = ?, error = ?, settled_at = ? WHERE key = ?",
             (EffectState.FAILED.value, f"{type(error).__name__}: {error}", _now(), key),
         )
+        if self._metrics is not None:
+            self._metrics.record(FAILED)  # single-worker declared-clean failure
 
     def _transition(self, key: str, state: EffectState) -> None:
         self.conn.execute("UPDATE effects SET state = ? WHERE key = ?", (state.value, key))
@@ -695,6 +704,8 @@ class SqliteLedger:
         A misbehaving hook must not corrupt the ledger, so its exceptions are logged and
         swallowed — the row is already durably AMBIGUOUS regardless."""
         logger.warning("sakrit: effect %s is AMBIGUOUS (%s) — resolve it", key, reason)
+        if self._metrics is not None:
+            self._metrics.record(AMBIGUOUS)
         if self._on_ambiguous is not None:
             try:
                 self._on_ambiguous(key)
@@ -708,6 +719,8 @@ class SqliteLedger:
         operator, not silent. Fires the optional ``on_replay`` hook; a raising hook is
         logged and swallowed (a replay is not a failure)."""
         logger.info("sakrit: %s served a recorded result — effect not re-fired (replay)", key)
+        if self._metrics is not None:
+            self._metrics.record(REPLAYED)
         if self._on_replay is not None:
             try:
                 self._on_replay(key)
@@ -931,6 +944,11 @@ class SqliteLedger:
         applied = cur.rowcount > 0
         if applied and state is EffectState.AMBIGUOUS:
             self._tell_ambiguous(key, "reconcile on takeover could not confirm the outcome")
+        elif applied and self._metrics is not None:  # leased success/failure (ambiguous counted
+            if state is EffectState.SUCCEEDED:  # by _tell_ambiguous above, so no double-count)
+                self._metrics.record(SETTLED)
+            elif state is EffectState.FAILED:
+                self._metrics.record(FAILED)
         return applied
 
     def heartbeat(

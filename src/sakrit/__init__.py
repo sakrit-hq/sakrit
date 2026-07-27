@@ -14,10 +14,18 @@ from collections.abc import Callable
 from typing import TypeVar
 
 from sakrit.__about__ import __version__
-from sakrit.core import EffectDecl, SqliteLedger, current_key
+from sakrit.core import EffectDecl, Metrics, SqliteLedger, current_key
 from sakrit.engine import Sakrit
 
-__all__ = ["EffectDecl", "Sakrit", "SqliteLedger", "__version__", "current_key", "safe"]
+__all__ = [
+    "EffectDecl",
+    "Metrics",
+    "Sakrit",
+    "SqliteLedger",
+    "__version__",
+    "current_key",
+    "safe",
+]
 
 _F = TypeVar("_F", bound=Callable[..., object])
 
