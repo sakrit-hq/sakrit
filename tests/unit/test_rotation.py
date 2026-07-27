@@ -202,6 +202,62 @@ def test_rotation_leased_takeover_of_a_rotated_out_secret_is_loud(tmp_path: Path
             )
 
 
+# --- D-1: the zombie-adopt guard must verify across a rotation, not byte-compare ------
+from sakrit.core.leased import _record_success_fenced  # noqa: E402
+
+
+def _succeeded_old_row(led: SqliteLedger, key: str) -> int:
+    """A row driven to SUCCEEDED by a peer signing OLD; returns the (now-stale) token."""
+    old_fp = fingerprint(DECL, ARGS, secret=OLD)
+    c = led.claim_leased(
+        key,
+        "s",
+        DECL.tool,
+        old_fp,
+        owner="A",
+        lease_seconds=30,
+        now=100.0,
+        secret_id=secret_id(OLD),
+    )
+    assert led.fence(key, c.fencing_token, EffectState.EXECUTING)
+    assert led.fence(key, c.fencing_token, EffectState.SUCCEEDED, result="peer-result")
+    return c.fencing_token
+
+
+def test_adopt_guard_verifies_a_same_action_peer_across_rotation(tmp_path: Path) -> None:
+    # A NEW-signed taker lost its lease mid-flight; the peer already settled the SAME action
+    # under OLD. Adopting must NOT false-diverge — verify recomputes under the peer's secret.
+    keyring = {secret_id(OLD): OLD, secret_id(NEW): NEW}
+    new_fp = fingerprint(DECL, ARGS, secret=NEW)
+    with SqliteLedger(tmp_path / "adopt-win.db", multi_worker=True) as led:
+        token = _succeeded_old_row(led, "k")  # fence with this token is now rejected (terminal)
+        out = _record_success_fenced(
+            led, "k", token, "my-result", new_fp, _leased_verify(ARGS, keyring, NEW)
+        )
+        assert out == "peer-result"  # adopted the peer's recorded result, no DivergentRetry
+    # Bug shape (no window): the byte-compare falsely diverges on the same action.
+    with SqliteLedger(tmp_path / "adopt-nb.db", multi_worker=True) as led:
+        token = _succeeded_old_row(led, "k")
+        with pytest.raises(DivergentRetry):
+            _record_success_fenced(led, "k", token, "my-result", new_fp)  # verify=None
+
+
+def test_adopt_guard_still_refuses_a_divergent_peer_across_rotation(tmp_path: Path) -> None:
+    keyring = {secret_id(OLD): OLD, secret_id(NEW): NEW}
+    with SqliteLedger(tmp_path / "adopt-div.db", multi_worker=True) as led:
+        token = _succeeded_old_row(led, "k")  # peer settled action {"to": "a@x.com"}
+        diverging = _leased_verify({"to": "b@x.com"}, keyring, NEW)  # taker ran a different action
+        with pytest.raises(DivergentRetry):
+            _record_success_fenced(
+                led,
+                "k",
+                token,
+                "my-result",
+                fingerprint(DECL, {"to": "b@x.com"}, secret=NEW),
+                diverging,
+            )
+
+
 def test_no_rotation_window_is_byte_identical_behavior(tmp_path: Path) -> None:
     # With no verify_secrets, the verifier is None → plain byte-compare, exactly as before.
     db = tmp_path / "l.db"

@@ -472,6 +472,13 @@ class SqliteLedger:
         row = self.conn.execute("SELECT fingerprint FROM effects WHERE key = ?", (key,)).fetchone()
         return None if row is None else row[0]
 
+    def secret_id_of(self, key: str) -> str | None:
+        """The ``secret_id`` provenance stored on ``key`` (``None`` if absent or legacy) — so the
+        adopt path can verify a peer's stored fingerprint under the secret that *signed* it
+        across a rotation window (D-1), not a raw byte-compare."""
+        row = self.conn.execute("SELECT secret_id FROM effects WHERE key = ?", (key,)).fetchone()
+        return None if row is None else row[0]
+
     def recorded_result(self, key: str) -> object:
         """The result stored on ``key`` — the same decoding as a REPLAY (a ``Replayed``
         marker for an unserializable result, else the decoded value). Raises if absent."""

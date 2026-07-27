@@ -96,6 +96,8 @@ class LeasedLedger(Ledger, Protocol):
 
     def fingerprint_of(self, key: str) -> str | None: ...
 
+    def secret_id_of(self, key: str) -> str | None: ...
+
     def claim_leased(
         self,
         key: str,

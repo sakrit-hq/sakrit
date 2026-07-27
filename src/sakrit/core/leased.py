@@ -35,7 +35,12 @@ _DISPATCH = object()
 
 
 def _record_success_fenced(
-    ledger: LeasedLedger, key: str, token: int, result: object, fingerprint: str | None = None
+    ledger: LeasedLedger,
+    key: str,
+    token: int,
+    result: object,
+    fingerprint: str | None = None,
+    verify: Verifier | None = None,
 ) -> object:
     """Record SUCCEEDED under our fence; if the fenced write is rejected, self-heal (V-7).
 
@@ -63,7 +68,15 @@ def _record_success_fenced(
         # A peer settled it → adopt the recorded truth. V-10: the takeover fp-gate already
         # bars a divergent peer from recording, but defend the "fingerprint is a guarantee on
         # every path" invariant here too — never adopt a *different* action's result.
-        if fingerprint is not None and ledger.fingerprint_of(key) != fingerprint:
+        # D-1: compare through the dual-secret ``verify`` closure (recompute under the peer's
+        # signing secret, keyed by its stored secret_id) when a rotation window is active — a
+        # raw byte-compare would falsely diverge on a same-action peer signed by the old secret.
+        stored = ledger.fingerprint_of(key)
+        if (
+            fingerprint is not None
+            and stored is not None
+            and not _fingerprint_ok(stored, ledger.secret_id_of(key), fingerprint, verify)
+        ):
             raise DivergentRetry(
                 f"{key}: a peer settled this key with a different action; refusing to adopt a "
                 "divergent result"
@@ -101,6 +114,7 @@ def _reconcile_on_takeover(
     reconcile: Callable[[str], Reconciliation] | None,
     on_absent: str,
     fingerprint: str | None = None,
+    verify: Verifier | None = None,
 ) -> object:
     """Resolve a RECONCILE claim (P1-2): a worker took over a reconcilable row a
     presumed-dead owner left in flight. Query the provider (read-only ⇒ crash-safe) and:
@@ -109,7 +123,7 @@ def _reconcile_on_takeover(
     fence ``AMBIGUOUS`` and raise. Shared by the sync and async leased loops."""
     rec = reconcile(key) if reconcile is not None else Reconciliation.unknown()
     if rec.verdict is Verdict.SETTLED:
-        return _record_success_fenced(ledger, key, token, rec.result, fingerprint)  # V-7 self-heal
+        return _record_success_fenced(ledger, key, token, rec.result, fingerprint, verify)  # V-7
     if rec.verdict is Verdict.ABSENT and on_absent == "retry":
         return _DISPATCH
     ledger.fence(key, token, EffectState.AMBIGUOUS)
@@ -234,7 +248,9 @@ def settle_leased(
             # not exist yet — the exact window V-5 defends. A kill here must leave the row
             # re-decidable, so the next taker still RECONCILEs (never a blind PROCEED).
             seam("during_reconcile_takeover")
-            outcome = _reconcile_on_takeover(ledger, key, token, reconcile, on_absent, fingerprint)
+            outcome = _reconcile_on_takeover(
+                ledger, key, token, reconcile, on_absent, fingerprint, verify
+            )
             if outcome is not _DISPATCH:
                 return outcome
             # ABSENT + retry: safe to re-dispatch with the token we hold. Fall through.
@@ -267,7 +283,7 @@ def settle_leased(
             raise
         finally:
             _current_key.reset(set_token)
-        result = _record_success_fenced(ledger, key, token, result, fingerprint)  # V-7 heal
+        result = _record_success_fenced(ledger, key, token, result, fingerprint, verify)  # V-7 heal
         seam("after_record")
         return result
 
@@ -420,7 +436,9 @@ async def settle_leased_async(
             # not exist yet — the exact window V-5 defends. A kill here must leave the row
             # re-decidable, so the next taker still RECONCILEs (never a blind PROCEED).
             seam("during_reconcile_takeover")
-            outcome = _reconcile_on_takeover(ledger, key, token, reconcile, on_absent, fingerprint)
+            outcome = _reconcile_on_takeover(
+                ledger, key, token, reconcile, on_absent, fingerprint, verify
+            )
             if outcome is not _DISPATCH:
                 return outcome
             # ABSENT + retry: safe to re-dispatch with the token we hold. Fall through.
@@ -445,6 +463,6 @@ async def settle_leased_async(
             raise
         finally:
             _current_key.reset(set_token)
-        result = _record_success_fenced(ledger, key, token, result, fingerprint)  # V-7 heal
+        result = _record_success_fenced(ledger, key, token, result, fingerprint, verify)  # V-7 heal
         seam("after_record")
         return result
