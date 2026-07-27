@@ -49,6 +49,27 @@ class _StepCtx:
 _step_ctx: ContextVar[_StepCtx | None] = ContextVar("sakrit_step_ctx", default=None)
 
 
+def _decl_signature(decl: EffectDecl) -> tuple[object, ...]:
+    """The structural, callable-identity-free signature of a decl (P5-8c).
+
+    Two decls with this signature equal would reconcile and fingerprint identically, so a
+    re-registration of one over the other is benign (first-registered wins its callables).
+    Captures every behavior-affecting field *by value* and the ``reconcile`` callable only by
+    *presence* (L0 vs L1/L2R) — never by object identity, so equivalent inline lambdas on the
+    ``guard`` hot path don't spuriously conflict."""
+    return (
+        decl.tool,
+        tuple(sorted(decl.classes.items(), key=lambda kv: kv[0])),
+        decl.default,
+        decl.provider_key_param,
+        decl.provider_ttl_s,
+        decl.clean_failures,
+        decl.on_absent,
+        decl.provider_read,
+        decl.reconcile is not None,
+    )
+
+
 def _is_lazy_iterator_fn(fn: Callable[..., object]) -> bool:
     """A generator or async-generator function: *calling* it returns a lazy iterator and
     runs none of the body. Guarding it would record SUCCEEDED before any effect ran
@@ -131,12 +152,38 @@ class Sakrit:
         self._adapter = adapter
         self._recovered = False
         self._registry: dict[str, EffectDecl] = {}  # tool identity → decl (for reconcile)
+        # "One decl per tool name per process" (P5-8c). The registry was first-decl-wins by
+        # setdefault, so a *conflicting* second decl for one tool name was silently ignored —
+        # recovery would then reconcile with the wrong (first-seen) decl. Refuse a conflict
+        # loudly; an identical re-registration is idempotent (re-import, re-decoration).
         # P3-8: a multi-worker ledger drives the *leased* protocol (leases + fencing +
         # takeover-by-ladder); a single-worker ledger drives the unfenced settle path.
         # The mode is a property of the ledger, machine-checked at its construction (P3-3).
         self._leased = ledger.multi_worker
         self._lease_seconds = lease_seconds
         self._wait_timeout = wait_timeout
+
+    def _register(self, decl: EffectDecl) -> None:
+        """Register ``decl`` under its tool name, refusing a conflicting re-declaration.
+
+        Idempotent for a structurally-equivalent decl (re-import / re-decoration, or the same
+        inline decl passed to ``guard`` on every call); a decl that would *reconcile or
+        fingerprint differently* for an already-registered tool name is a footgun (recovery
+        keys on the first-seen decl), so it is refused loudly rather than silently dropped
+        (P5-8c). Equivalence is **structural**, not ``==``: two decls carrying distinct but
+        equivalent ``reconcile`` lambdas (frozen-dataclass ``==`` compares callables by
+        identity) must not spuriously conflict — so the signature captures whether a reconcile
+        is *present* (L0 vs L1/L2R), not which lambda object it is (first-registered wins, as
+        the old ``setdefault`` did)."""
+        existing = self._registry.get(decl.tool)
+        if existing is not None and _decl_signature(existing) != _decl_signature(decl):
+            raise SakritError(
+                f"tool {decl.tool!r} is already registered with a different declaration. "
+                "One decl per tool name per process — a second, conflicting decl would be "
+                "silently ignored and recovery would reconcile with the first. Use one "
+                "declaration, or a distinct tool name."
+            )
+        self._registry.setdefault(decl.tool, decl)  # first-registered wins (keeps its callables)
 
     def _prepare(
         self,
@@ -151,7 +198,7 @@ class Sakrit:
     ) -> tuple[str, str, str, dict[str, object]]:
         """Shared prelude for guard/guard_async: run recovery once, merge the sk.step
         context, resolve the coordinate. Returns ``(key, scope, fingerprint, kwargs)``."""
-        self._registry.setdefault(decl.tool, decl)
+        self._register(decl)
         # Q14 — the engine guarantees recovery runs once per process, before the
         # first claim it issues. The Q1 fix removed claim's lazy safety net, so a
         # crash leftover must be resolved by recovery, not left to chance or the
@@ -383,7 +430,7 @@ class Sakrit:
         ``EffectInFlightError``; only the sequential same-args repeat swallows.) Automatic
         occurrence handling is deferred — see ``docs/dev-notes/occurrence.md``.
         """
-        self._registry.setdefault(decl.tool, decl)  # available to recovery before first call
+        self._register(decl)  # available to recovery before first call; refuses a conflict
 
         def deco(fn: F) -> F:
             _reject_lazy(fn)  # V-1: refuse a generator / async-gen at decoration (import) time

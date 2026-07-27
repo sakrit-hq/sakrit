@@ -209,6 +209,44 @@ def test_same_owner_label_two_workers_do_not_both_proceed(tmp_path: Path) -> Non
         b.close()
 
 
+# --- P5-8c: one decl per tool name per process (conflicting re-decl refused) ---
+def test_conflicting_redeclaration_of_a_tool_is_refused() -> None:
+    sk = Sakrit(SqliteLedger(":memory:"), secret=SECRET)
+    sk.effect(EffectDecl("email.send", {"to": ArgClass.IDENTITY}))(lambda to: "ok")
+    with pytest.raises(SakritError, match="already registered with a different declaration"):
+        # Same tool name, different arg classes → a silent first-decl-wins would mis-reconcile.
+        sk.effect(EffectDecl("email.send", {"to": ArgClass.CONTENT}))(lambda to: "ok")
+
+
+def test_identical_redeclaration_of_a_tool_is_idempotent() -> None:
+    sk = Sakrit(SqliteLedger(":memory:"), secret=SECRET)
+    decl = EffectDecl("email.send", {"to": ArgClass.IDENTITY})
+    sk.effect(decl)(lambda to: "ok")
+    sk.effect(EffectDecl("email.send", {"to": ArgClass.IDENTITY}))(lambda to: "ok")  # equal → fine
+
+
+def test_repeated_guard_of_inline_decl_with_lambda_reconcile_is_not_a_false_conflict() -> None:
+    # Regression: _register runs on EVERY guard() call; a decl carrying a distinct-but-
+    # equivalent reconcile lambda per call must not spuriously conflict (frozen-dataclass ==
+    # compares callables by identity). Structural signature keys on reconcile *presence*.
+    from sakrit.core import Reconciliation, Verdict
+
+    sk = Sakrit(SqliteLedger(":memory:"), secret=SECRET)
+
+    def call() -> object:
+        decl = EffectDecl(
+            "crm.ticket",
+            {"who": ArgClass.IDENTITY},
+            reconcile=lambda k: Reconciliation(Verdict.ABSENT),  # a fresh lambda each call
+        )
+        return sk.guard(decl, lambda who: "ok", kwargs={"who": "a"}, key=f"t-{call.n}")  # type: ignore[attr-defined]
+
+    call.n = 0  # type: ignore[attr-defined]
+    call()
+    call.n = 1  # type: ignore[attr-defined]
+    call()  # second guard of the same tool with a NEW reconcile lambda → must not raise
+
+
 # --- P1-13: no zero-argument (ephemeral-by-default) footgun -----------------
 def test_zero_arg_ledger_is_refused() -> None:
     with pytest.raises(TypeError):

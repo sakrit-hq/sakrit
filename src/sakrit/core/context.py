@@ -22,7 +22,16 @@ _current_key: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 
 
 def current_key() -> str:
-    """The current guarded effect's key. Raises if called outside a guarded effect."""
+    """The current guarded effect's key. Raises if called outside a guarded effect.
+
+    **Constraint (P5-8b):** the key rides a :class:`contextvars.ContextVar`, which is
+    copied into a task/thread at *creation* but does not propagate into a bare
+    ``threading.Thread`` or a pool worker a tool spawns *inside* the guarded call. If a
+    tool offloads its actual side-effecting call to such a worker and reads
+    ``current_key()`` there, it raises — mid-effect, after ``mark_executing`` — leaving an
+    ambiguous leftover. Read the key on the guarded call's own stack (then pass it into the
+    worker as a plain argument), or use ``contextvars.copy_context().run(...)`` /
+    ``asyncio``'s context-preserving APIs so the var travels with the work."""
     key = _current_key.get()
     if key is None:
         raise SakritError("current_key() called outside a guarded effect")

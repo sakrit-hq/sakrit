@@ -31,7 +31,13 @@ class RegeneratedDuplicate(SakritError):
     """A settled irreversible effect from an earlier plan epoch matches this one.
 
     Raised by the cross-epoch tripwire (R3, ``docs/design.md`` §7): prevent-and-ask,
-    never silently replay. Deferred past the Act II narrow core.
+    never silently replay.
+
+    **RESERVED — not yet raised (P5-8f).** The R3 / plan-epoch machinery is deferred
+    (gated on the Q13 epoch-detection conformance test), so nothing in this build raises
+    this yet. It is exported so the symbol is stable, but **do not write ``except
+    RegeneratedDuplicate`` clauses against it as load-bearing control flow until R3 lands** —
+    its exact raise conditions are still subject to change.
     """
 
 

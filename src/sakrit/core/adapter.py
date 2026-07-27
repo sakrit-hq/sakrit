@@ -20,6 +20,17 @@ from sakrit.core.errors import NoCoordinateError
 # domain itself, so it is global by construction (design.md §4, rung 3).
 _BUSINESS_SCOPE = "global"
 
+# Rung discriminator tags, prefixed onto ``call_site`` so the three ladder rungs occupy
+# disjoint coordinate spaces (P4-6). Without this, ``key="X"`` (rung 1) and ``step="X"``
+# (rung 3) in the same scope — or an adapter that happened to emit ``call_site=b"X"`` —
+# would mint a byte-identical key for genuinely different intents (a business action, a
+# positional step, a runtime coordinate): a silent cross-rung collision. The tag is opaque
+# to the core (``call_site`` is never parsed) and length-framed by the key derivation, so
+# prefixing stays injective. Bumps ``_KEY_SCHEME`` v3→v4 (see ``keys.py``).
+_RUNG_BUSINESS = b"\x01"  # rung 1 — explicit business key=
+_RUNG_RUNTIME = b"\x02"  # rung 2 — adapter runtime coordinate
+_RUNG_STEP = b"\x03"  # rung 3 — developer-declared step=
+
 
 @runtime_checkable
 class RuntimeAdapter(Protocol):
@@ -99,14 +110,17 @@ def resolve_coordinate(
                 "position within a run. Pass exactly one."
             )
         return Coordinate(
-            scope=scope or _BUSINESS_SCOPE, call_site=key.encode("utf-8"), occurrence=occurrence
+            scope=scope or _BUSINESS_SCOPE,
+            call_site=_RUNG_BUSINESS + key.encode("utf-8"),
+            occurrence=occurrence,
         )
 
-    # Rung 2 — runtime coordinate.
+    # Rung 2 — runtime coordinate. Tag the adapter's opaque call_site so a runtime
+    # coordinate can never collide with a hand-typed key= / step= of the same bytes.
     if adapter is not None:
         coord = adapter.current_coordinate()
         if coord is not None:
-            return coord
+            return coord._replace(call_site=_RUNG_RUNTIME + coord.call_site)
 
     # Rung 3 — developer-declared step id. A step names a position *within a run*,
     # so it needs a scope; without one it can't isolate runs and we won't guess.
@@ -116,7 +130,9 @@ def resolve_coordinate(
                 f"a declared step ({step!r}) needs a scope to bound its retry domain; "
                 "pass scope=<run id>, or use key=<business key> for a global effect"
             )
-        return Coordinate(scope=scope, call_site=step.encode("utf-8"), occurrence=occurrence)
+        return Coordinate(
+            scope=scope, call_site=_RUNG_STEP + step.encode("utf-8"), occurrence=occurrence
+        )
 
     # Rung 4 — refuse.
     raise NoCoordinateError(

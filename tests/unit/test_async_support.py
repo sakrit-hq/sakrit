@@ -7,7 +7,14 @@ import asyncio
 import pytest
 
 from sakrit import EffectDecl, Sakrit, SqliteLedger, current_key
-from sakrit.core import ArgClass, DivergentRetry, EffectState, positional_key, settle_async
+from sakrit.core import (
+    ArgClass,
+    DivergentRetry,
+    EffectState,
+    positional_key,
+    resolve_coordinate,
+    settle_async,
+)
 from sakrit.core.coordinate import Coordinate
 
 DECL = EffectDecl("t.send", {"to": ArgClass.IDENTITY})
@@ -61,7 +68,8 @@ def test_async_tool_can_read_current_key() -> None:
         return "ok"
 
     asyncio.run(send(to="a@x.com"))
-    expected = positional_key(Coordinate("global", b"order-9"), "t.send")
+    # The engine keys via the ladder (rung 1); compute the expected key through it too.
+    expected = positional_key(resolve_coordinate(key="order-9"), "t.send")
     assert seen["key"] == expected
 
 

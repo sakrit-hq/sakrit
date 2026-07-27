@@ -18,11 +18,19 @@ import hashlib
 from sakrit.core.coordinate import Coordinate
 
 # Bumped if the derivation ever changes, so old and new keys never silently alias.
-_KEY_SCHEME = b"sakrit-key-v3"
+# v3→v4 (P4-6): the coordinate ladder now prefixes ``call_site`` with a one-byte rung tag
+# (see ``adapter.py``), so a business ``key=``, a runtime coordinate, and a declared ``step=``
+# with the same string can no longer mint a byte-identical key. That changes every
+# ladder-produced key, so it is a key-scheme bump. A key-scheme change is a *re-key*: old
+# rows are addressed under different keys and simply are not found (the row's stored
+# ``key_version`` records which scheme wrote it, but — unlike a fingerprint-scheme change —
+# it cannot be auto-detected on a key miss). Pre-freeze this is free (no production ledger
+# exists); post-freeze it is the "drain in-flight runs" migration of design §13.5.
+_KEY_SCHEME = b"sakrit-key-v4"
 
 # The scheme id lifted out of the hash input onto the ledger row (P5-3), so a mixed-scheme
 # ledger is *detectable* rather than silently orphaning. Must track ``_KEY_SCHEME``.
-KEY_VERSION = "v3"
+KEY_VERSION = "v4"
 
 
 def positional_key(coord: Coordinate, tool: str) -> str:

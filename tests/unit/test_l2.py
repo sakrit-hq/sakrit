@@ -5,11 +5,11 @@ from sakrit import Sakrit, SqliteLedger, current_key
 from sakrit.adapters import FakeAdapter
 from sakrit.core import (
     ArgClass,
-    Coordinate,
     EffectDecl,
     EffectState,
     fingerprint,
     positional_key,
+    resolve_coordinate,
     settle,
 )
 
@@ -56,7 +56,8 @@ def test_l2_tool_reads_current_key() -> None:
     guarded = sk.effect(CHARGE, key="order-4471-charge")(charge)
     guarded(customer="c1", amount_cents=4000)
 
-    expected = positional_key(Coordinate("global", b"order-4471-charge"), "payment.charge")
+    # The engine keys via the ladder (rung 1), so the expected key must go through it too.
+    expected = positional_key(resolve_coordinate(key="order-4471-charge"), "payment.charge")
     assert seen["key"] == expected
 
 

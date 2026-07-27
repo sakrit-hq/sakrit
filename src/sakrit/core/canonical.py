@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Canonical serialization — total, deterministic, injective.
+"""Canonical serialization — total, deterministic, and injective *up to a documented
+set of container equivalences*.
 
-The same logical value must always produce the same bytes, and two distinct values
-(of any type or shape) must produce different bytes — so a fingerprint over
+The same logical value must always produce the same bytes, so a fingerprint over
 canonicalized args is a reliable identity witness. Canonicalization is **core-owned**
 (not per-adapter) or fingerprints wouldn't agree across adapters.
 
@@ -12,6 +12,24 @@ from ``int``; ``int`` exact; ``float`` shortest round-trip with ``-0.0``→``0.0
 NaN/inf as tokens; ``Decimal`` normalized; ``datetime`` UTC ISO (naive rejected);
 ``None`` distinct; every scalar length-framed and type-tagged so nothing collides.
 Any unregistered type **fails closed** with :class:`CanonicalizationError`.
+
+**Injectivity, precisely (P4-7).** Distinct *scalars* never collide (each is
+type-tagged and length-framed; ``Decimal("1.00")`` and ``int 1`` differ by tag). But
+canonicalization is injective on *logical shape*, not Python *type*: it deliberately
+collapses these container equivalences —
+
+- ``tuple`` ≡ ``list`` (both encode as ``L`` — JSON has no tuple, so the replay
+  round-trip couldn't preserve the distinction anyway),
+- ``set`` ≡ ``frozenset`` (both ``S``),
+- any ``Mapping`` ≡ ``dict`` (both ``M``),
+- a ``NamedTuple`` encodes as a positional ``L``, losing its field names.
+
+These are benign for a fingerprint (a reworded ``list`` vs ``tuple`` of the same
+identity args is the same intended action) and are the safe direction — they can only
+make two calls look *more* alike, never mint a spurious divergence. They matter only
+to the cross-language byte-identity story (Q15, ``spec.md``): a language binding MUST
+adopt the same equivalences, or a shared fingerprint is meaningless. Documented, not
+tightened — tightening ``tuple``/``list`` would break the JSON replay round-trip.
 """
 
 from __future__ import annotations

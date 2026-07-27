@@ -17,6 +17,7 @@ from sakrit.core import (
     positional_key,
     resolve_coordinate,
 )
+from sakrit.core.adapter import _RUNG_BUSINESS, _RUNG_RUNTIME, _RUNG_STEP
 
 
 def test_fakeadapter_satisfies_runtime_adapter() -> None:
@@ -38,7 +39,7 @@ def test_ladder_rung1_explicit_key_wins_over_adapter() -> None:
     adapter.at("send-email")
     coord = resolve_coordinate(adapter, key="invoice-8841-charge")
     assert coord.scope == "global"
-    assert coord.call_site == b"invoice-8841-charge"
+    assert coord.call_site == _RUNG_BUSINESS + b"invoice-8841-charge"
 
 
 def test_ladder_rung2_adapter_coordinate_when_no_key() -> None:
@@ -47,7 +48,7 @@ def test_ladder_rung2_adapter_coordinate_when_no_key() -> None:
     # No key → the adapter's runtime coordinate wins over a step.
     coord = resolve_coordinate(adapter, step="ignored")
     assert coord.scope == "run-1"
-    assert coord.call_site == b"send-email"
+    assert coord.call_site == _RUNG_RUNTIME + b"send-email"
 
 
 def test_ladder_key_and_step_together_refuses() -> None:
@@ -57,7 +58,7 @@ def test_ladder_key_and_step_together_refuses() -> None:
 
 def test_ladder_rung2_developer_step() -> None:
     coord = resolve_coordinate(scope="run-1", step="welcome-email", occurrence=2)
-    assert coord == Coordinate("run-1", b"welcome-email", occurrence=2)
+    assert coord == Coordinate("run-1", _RUNG_STEP + b"welcome-email", occurrence=2)
 
 
 def test_ladder_rung2_step_without_scope_refuses() -> None:
@@ -68,7 +69,18 @@ def test_ladder_rung2_step_without_scope_refuses() -> None:
 def test_ladder_rung3_business_key_is_global() -> None:
     coord = resolve_coordinate(key="invoice-8841-charge")
     assert coord.scope == "global"
-    assert coord.call_site == b"invoice-8841-charge"
+    assert coord.call_site == _RUNG_BUSINESS + b"invoice-8841-charge"
+
+
+def test_ladder_rungs_with_identical_string_do_not_collide() -> None:
+    # P4-6: a business key=, a runtime coordinate, and a declared step= all carrying the
+    # same string in the same scope must mint THREE distinct keys, not alias onto one.
+    adapter = FakeAdapter(scope="global")
+    adapter.at("X")
+    k_business = positional_key(resolve_coordinate(key="X"), "t")
+    k_runtime = positional_key(resolve_coordinate(adapter), "t")
+    k_step = positional_key(resolve_coordinate(scope="global", step="X"), "t")
+    assert len({k_business, k_runtime, k_step}) == 3
 
 
 def test_ladder_rung4_refuses_loudly() -> None:
@@ -79,7 +91,7 @@ def test_ladder_rung4_refuses_loudly() -> None:
 def test_adapter_with_no_current_coordinate_falls_through() -> None:
     adapter = FakeAdapter()  # never placed at a step -> current_coordinate() is None
     coord = resolve_coordinate(adapter, key="biz-key")
-    assert coord.call_site == b"biz-key"
+    assert coord.call_site == _RUNG_BUSINESS + b"biz-key"
 
 
 # --- positional keys: stable across replay, unique per step ---------------
