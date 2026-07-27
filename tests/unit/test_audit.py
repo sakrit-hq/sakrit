@@ -96,6 +96,32 @@ def test_z_suffix_string_filter_is_accepted_and_normalized(ledger_db: Path) -> N
         assert len(list(q.rows(since="1970-01-01T00:00:00Z"))) == 3
 
 
+def test_missing_meta_table_reads_as_legacy(ledger_db: Path) -> None:
+    # B-4: a "no such table: sakrit_meta" means pre-P5-3 legacy → understood, not refused.
+    q = AuditQuery.__new__(AuditQuery)
+
+    class _Conn:
+        def execute(self, *a: object) -> object:
+            raise sqlite3.OperationalError("no such table: sakrit_meta")
+
+    q._conn = _Conn()  # type: ignore[assignment]
+    q._enforce_schema_version(ledger_db)  # returns without raising
+
+
+def test_locked_db_during_schema_check_is_not_swallowed(ledger_db: Path) -> None:
+    # B-4: a transient OperationalError ("database is locked") must NOT be misread as legacy —
+    # narrowing the catch to no-such-table means it propagates instead of skipping the guard.
+    q = AuditQuery.__new__(AuditQuery)
+
+    class _Conn:
+        def execute(self, *a: object) -> object:
+            raise sqlite3.OperationalError("database is locked")
+
+    q._conn = _Conn()  # type: ignore[assignment]
+    with pytest.raises(sqlite3.OperationalError, match="locked"):
+        q._enforce_schema_version(ledger_db)
+
+
 def test_newer_schema_version_is_refused(ledger_db: Path) -> None:
     # A-4: the read-only compliance surface must refuse a future format, like the writer does.
     con = sqlite3.connect(ledger_db)

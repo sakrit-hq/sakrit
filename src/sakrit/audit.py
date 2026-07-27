@@ -130,8 +130,13 @@ class AuditQuery:
             row = self._conn.execute(
                 "SELECT v FROM sakrit_meta WHERE k = 'schema_version'"
             ).fetchone()
-        except sqlite3.OperationalError:
-            return  # no sakrit_meta table → pre-P5-3 legacy ledger, understood as-is
+        except sqlite3.OperationalError as exc:
+            # Only a *missing table* means "pre-P5-3 legacy ledger, understood as-is" (B-4).
+            # A transient error (e.g. "database is locked") must NOT silently skip the guard —
+            # re-raise it rather than read as legacy.
+            if "no such table" in str(exc).lower():
+                return
+            raise
         if row is None:
             return
         on_disk = int(row[0])

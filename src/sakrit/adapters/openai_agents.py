@@ -76,15 +76,25 @@ def tool_boundary(ctx: ToolContext, *, scope: str | None = None) -> Iterator[Non
     """Make ``ctx`` the coordinate source for guarded calls in this block.
 
     Call it first thing in the tool body, passing the tool's ``ToolContext`` argument and a
-    **stable run identity** as ``scope`` — an id you persist alongside the ``RunState`` string
-    (a conversation id, a workflow run id), so it is byte-identical on every resume. The
-    adapter deliberately does not derive scope from the ambient trace (Fable A-1): that is
-    controlled by the resume *environment*, not the recorded state, and varies across a
-    ``with trace(...)`` wrapper or a tracing-config change.
+    **stable per-run identity** as ``scope`` — an id you persist alongside the ``RunState``
+    string (a workflow/run id), so it is byte-identical on every resume. The adapter
+    deliberately does not derive scope from the ambient trace (Fable A-1): that is controlled
+    by the resume *environment*, not the recorded state, and varies across a ``with trace(...)``
+    wrapper or a tracing-config change.
 
-    Refuses a context with no usable ``tool_call_id`` loudly — a blank call id cannot carry
-    positional identity. ``scope=None`` is allowed but yields no coordinate (the guard must
-    then supply an explicit ``key=``), never a fabricated one.
+    **The scope must be no coarser than the provider's call-id-uniqueness domain (Fable B-2).**
+    ``call_site`` is the model's ``tool_call_id``; OpenAI Responses ids are globally unique, but
+    a chat-completions/LiteLLM-backed provider can emit deterministic ids (``call_0``) that
+    repeat *across runs*. A **per-run** scope keeps two runs' ``call_0`` distinct; a
+    *conversation*-wide scope would let them collide — so scope per run, not per conversation.
+
+    ``scope`` is **stripped**, and an explicitly-passed but blank-after-strip scope is refused
+    loudly (Fable B-1): a whitespace-only run identity would pool every run into one scope (a
+    silent duplicate — the blank-``checkpoint_ns`` analog), and an unstripped ``" run-1"`` vs
+    ``"run-1"`` (e.g. a run id read from a file with a trailing newline) would re-key every
+    resume. Omitting ``scope`` entirely is allowed and yields no coordinate — the guard must
+    then supply an explicit ``key=`` — never a fabricated scope. Also refuses a context with no
+    usable ``tool_call_id``.
     """
     call_id = str(getattr(ctx, "tool_call_id", "") or "").strip()
     if not call_id:
@@ -92,6 +102,14 @@ def tool_boundary(ctx: ToolContext, *, scope: str | None = None) -> Iterator[Non
             "tool_boundary needs a ToolContext with a tool_call_id — got none. Pass the "
             "tool's ToolContext argument (declare it as the first parameter of the tool)."
         )
+    if scope is not None:
+        scope = scope.strip()  # normalize a trailing-newline run id so resumes don't re-key
+        if not scope:
+            raise SakritError(
+                "tool_boundary got a blank scope= (whitespace only). A blank run identity would "
+                "pool every run into one scope — a silent duplicate. Pass a real, stable per-run "
+                "id, or omit scope= to fall to the ladder (an explicit key=)."
+            )
     token = _tool_ctx.set((ctx, scope))
     try:
         yield

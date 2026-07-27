@@ -332,3 +332,28 @@ def test_blank_tool_call_id_is_refused_loudly() -> None:
     boundary = tool_boundary(_Stub())  # type: ignore[arg-type]
     with pytest.raises(SakritError, match="tool_call_id"):
         boundary.__enter__()
+
+
+def test_blank_scope_is_refused_loudly() -> None:
+    # Fable B-1: an explicitly-passed whitespace-only scope would pool every run into one
+    # scope (the same duplicate-on-resume mode as A-1, app-triggered) — refuse it.
+    class _Stub:
+        tool_call_id = "call_X"
+
+    for blank in ("   ", "\t", "\n"):
+        boundary = tool_boundary(_Stub(), scope=blank)  # type: ignore[arg-type]
+        with pytest.raises(SakritError, match="blank scope"):
+            boundary.__enter__()
+
+
+def test_scope_is_stripped_so_a_trailing_newline_does_not_rekey() -> None:
+    # Fable B-1: a run id read from a file with a trailing newline (" run-1\n") must yield the
+    # SAME coordinate as "run-1", or every resume would re-key and re-fire.
+    class _Stub:
+        tool_call_id = "call_X"
+
+    with tool_boundary(_Stub(), scope=" run-1\n"):  # type: ignore[arg-type]
+        c1 = ADAPTER.current_coordinate()
+    with tool_boundary(_Stub(), scope="run-1"):  # type: ignore[arg-type]
+        c2 = ADAPTER.current_coordinate()
+    assert c1 is not None and c1 == c2 and c1.scope == "run-1"
