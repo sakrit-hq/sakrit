@@ -29,6 +29,21 @@ from sakrit.core.seams import seam
 # Sentinel: the claim decided PROCEED (vs a replayed result, which may itself be None).
 _PROCEED = object()
 
+# A dual-secret verifier: given a stored (fingerprint, secret_id), does the *incoming* call
+# reproduce it under the secret that signed the row? None → plain byte-compare (no rotation
+# window; the single-secret behavior, unchanged). See ``fingerprint.matches_fingerprint``.
+Verifier = Callable[[str, str | None], bool]
+
+
+def _fingerprint_ok(
+    stored_fp: str, stored_secret_id: str | None, incoming_fp: str, verify: Verifier | None
+) -> bool:
+    """Whether a stored fingerprint matches the incoming action. With a rotation ``verify`` in
+    play, recompute under the row's signing secret (dual-secret window); else byte-compare."""
+    if verify is not None:
+        return verify(stored_fp, stored_secret_id)
+    return stored_fp == incoming_fp
+
 
 def _decide(
     ledger: Ledger,
@@ -41,6 +56,7 @@ def _decide(
     provider_ttl_s: float | None,
     reconcilable: bool,
     secret_id: str | None,
+    verify: Verifier | None,
 ) -> object:
     """Claim the key and decide: return a replayed result, raise on ambiguity, or
     return ``_PROCEED`` to signal 'we own it — dispatch'. Shared by sync and async."""
@@ -55,7 +71,8 @@ def _decide(
         secret_id=secret_id,
     )
     if claim.kind is ClaimKind.REPLAY:
-        if claim.fingerprint != fingerprint:
+        assert claim.fingerprint is not None  # a SUCCEEDED row always carries its fingerprint
+        if not _fingerprint_ok(claim.fingerprint, claim.secret_id, fingerprint, verify):
             raise DivergentRetry(
                 f"{key}: identity args differ from the recorded action; refusing to "
                 "merge or re-execute (should a reworded field be declared content?)"
@@ -63,7 +80,9 @@ def _decide(
         ledger._tell_replay(key)  # V-2 rider: served-not-re-fired is told, not silent
         return claim.result
     if claim.kind is ClaimKind.AMBIGUOUS:
-        if claim.fingerprint is not None and claim.fingerprint != fingerprint:
+        if claim.fingerprint is not None and not _fingerprint_ok(
+            claim.fingerprint, claim.secret_id, fingerprint, verify
+        ):
             # P4-8: this is not a retry of the ambiguous action — it is a *different* action
             # colliding on its key. Name that, rather than send the operator to investigate
             # "did my effect land?" for an effect they never issued.
@@ -97,6 +116,7 @@ def settle(
     clean_failures: tuple[type[BaseException], ...] = (),
     reconcilable: bool = False,
     secret_id: str | None = None,
+    verify: Verifier | None = None,
 ) -> object:
     """Run ``fn`` exactly once for ``key`` (durably), or return its saved result.
 
@@ -118,6 +138,7 @@ def settle(
         provider_ttl_s=provider_ttl_s,
         reconcilable=reconcilable,
         secret_id=secret_id,
+        verify=verify,
     )
     if decided is not _PROCEED:
         return decided
@@ -172,6 +193,7 @@ async def settle_async(
     clean_failures: tuple[type[BaseException], ...] = (),
     reconcilable: bool = False,
     secret_id: str | None = None,
+    verify: Verifier | None = None,
 ) -> object:
     """Await ``fn`` exactly once for ``key`` (durably), or return its saved result.
 
@@ -189,6 +211,7 @@ async def settle_async(
         provider_ttl_s=provider_ttl_s,
         reconcilable=reconcilable,
         secret_id=secret_id,
+        verify=verify,
     )
     if decided is not _PROCEED:
         return decided

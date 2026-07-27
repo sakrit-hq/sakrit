@@ -86,6 +86,7 @@ class Claim:
     kind: ClaimKind
     result: object | None = None
     fingerprint: str | None = None
+    secret_id: str | None = None  # which HMAC secret signed `fingerprint` (dual-secret window)
     fencing_token: int = 0  # multi-worker: guards this owner's writes against a zombie
 
 
@@ -486,8 +487,8 @@ class SqliteLedger:
         self.conn.execute("BEGIN IMMEDIATE")
         try:
             row = self.conn.execute(
-                "SELECT state, result, fingerprint, result_ref, key_version, fingerprint_version "
-                "FROM effects WHERE key = ?",
+                "SELECT state, result, fingerprint, result_ref, key_version, fingerprint_version, "
+                "secret_id FROM effects WHERE key = ?",
                 (key,),
             ).fetchone()
 
@@ -523,11 +524,14 @@ class SqliteLedger:
                         result = Replayed(key=key, note=row[3])
                     else:
                         result = None if row[1] is None else json.loads(row[1])
-                    claim = Claim(ClaimKind.REPLAY, result=result, fingerprint=row[2])
+                    claim = Claim(
+                        ClaimKind.REPLAY, result=result, fingerprint=row[2], secret_id=row[6]
+                    )
                 elif state is EffectState.AMBIGUOUS:
                     # P4-8: carry the stored fingerprint so the caller can tell a genuine
                     # ambiguity (same action) from a *different* action colliding on the key.
-                    claim = Claim(ClaimKind.AMBIGUOUS, fingerprint=row[2])
+                    # secret_id (row[6]) lets the caller verify across a dual-secret window.
+                    claim = Claim(ClaimKind.AMBIGUOUS, fingerprint=row[2], secret_id=row[6])
                 elif state in (EffectState.EXECUTING, EffectState.CLAIMED):
                     # No death-evidence in the claim path (single-worker ≠ single-
                     # thread — parallel branches / tool-calls can hold a *live* row) →
@@ -766,8 +770,8 @@ class SqliteLedger:
         try:
             row = self.conn.execute(
                 "SELECT state, result, fingerprint, result_ref, fencing_token, lease_owner, "
-                "lease_expires, created_at, provider_ttl_s, key_version, fingerprint_version "
-                "FROM effects WHERE key = ?",
+                "lease_expires, created_at, provider_ttl_s, key_version, fingerprint_version, "
+                "secret_id FROM effects WHERE key = ?",
                 (key,),
             ).fetchone()
             if row is None:
@@ -807,12 +811,15 @@ class SqliteLedger:
                         if row[3] is not None
                         else (None if row[1] is None else json.loads(row[1]))
                     )
-                    claim = Claim(ClaimKind.REPLAY, result=result, fingerprint=row[2])
+                    claim = Claim(
+                        ClaimKind.REPLAY, result=result, fingerprint=row[2], secret_id=row[11]
+                    )
                 elif state is EffectState.AMBIGUOUS:
                     # P4-8: carry the stored fingerprint (a divergent caller on an already-
                     # AMBIGUOUS row is a different action colliding, not a retry of the
                     # ambiguous one — this branch precedes the V-10 in-flight gate below).
-                    claim = Claim(ClaimKind.AMBIGUOUS, fingerprint=row[2])
+                    # secret_id (row[11]) lets the caller verify across a dual-secret window.
+                    claim = Claim(ClaimKind.AMBIGUOUS, fingerprint=row[2], secret_id=row[11])
                 elif lease_expires is not None and lease_expires > now and lease_owner != owner:
                     claim = Claim(ClaimKind.BUSY)  # a live owner holds it
                 elif row[2] != fingerprint:

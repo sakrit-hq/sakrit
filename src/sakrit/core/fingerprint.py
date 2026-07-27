@@ -18,6 +18,7 @@ from collections.abc import Mapping
 
 from sakrit.core.canonical import canonicalize
 from sakrit.core.declaration import EffectDecl
+from sakrit.core.errors import SchemeMismatch
 from sakrit.core.normalizers import normalize
 
 # The fingerprint scheme id (HMAC-SHA256 over the v1 canonical form). Stamped onto each ledger
@@ -65,3 +66,48 @@ def fingerprint(decl: EffectDecl, named_args: Mapping[str, object], *, secret: b
             for k, v in identity.items()
         }
     return hmac.new(secret, canonicalize(identity), hashlib.sha256).hexdigest()
+
+
+def matches_fingerprint(
+    decl: EffectDecl,
+    named_args: Mapping[str, object],
+    stored_fp: str,
+    stored_secret_id: str | None,
+    *,
+    keyring: Mapping[str, bytes],
+    primary_secret: bytes,
+) -> bool:
+    """Whether ``named_args`` reproduces ``stored_fp`` under the secret that **signed the stored
+    row** — the software dual-secret rotation window.
+
+    Rotating the HMAC secret naively makes every in-flight fingerprint incomparable → a
+    fleet-wide ``DivergentRetry`` storm, because the running code signs with the *new* secret
+    while stored rows were signed with the *old* one. The window fixes that: sign new writes
+    with the new (``primary_secret``) but keep old secrets in ``keyring`` (keyed by their
+    :func:`secret_id`) for the drain window, and — the pivot — recompute the incoming args'
+    fingerprint under the **same** secret that produced the stored one, identified by the row's
+    ``stored_secret_id`` (the P5-3 provenance column). Same action → matches; different action →
+    still diverges.
+
+    - ``stored_secret_id is None`` (a pre-keyring/legacy row) → verify against ``primary_secret``:
+      the single-secret behavior, unchanged.
+    - ``stored_secret_id`` in ``keyring`` → verify against that secret.
+    - ``stored_secret_id`` **not** in ``keyring`` → the signing secret has rotated *out* of the
+      window. Refuse loudly (:class:`SchemeMismatch`) rather than return a misleading ``False``
+      (a silent ``DivergentRetry``): the operator must widen the verify window or drain the runs
+      it signed — never compare across an unknown secret.
+    """
+    secret: bytes
+    if stored_secret_id is None:
+        secret = primary_secret
+    else:
+        found = keyring.get(stored_secret_id)
+        if found is None:
+            raise SchemeMismatch(
+                f"stored row was signed by HMAC secret id {stored_secret_id!r}, not in the "
+                "verify keyring — it has rotated out of the window. Add the old secret to "
+                "verify_secrets, or drain the in-flight runs it signed; never compare across an "
+                "unknown secret."
+            )
+        secret = found
+    return hmac.compare_digest(fingerprint(decl, named_args, secret=secret), stored_fp)

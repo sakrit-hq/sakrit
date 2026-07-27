@@ -23,12 +23,12 @@ from typing import Any, TypeVar
 from sakrit.core.adapter import RuntimeAdapter, resolve_coordinate
 from sakrit.core.declaration import EffectDecl
 from sakrit.core.errors import SakritError
-from sakrit.core.fingerprint import fingerprint, secret_id
+from sakrit.core.fingerprint import fingerprint, matches_fingerprint, secret_id
 from sakrit.core.keys import positional_key
 from sakrit.core.leased import settle_leased, settle_leased_async
 from sakrit.core.protocols import LeasedLedger
 from sakrit.core.reconcile import Verdict
-from sakrit.core.settle import settle, settle_async
+from sakrit.core.settle import Verifier, settle, settle_async
 
 logger = logging.getLogger("sakrit")
 
@@ -139,6 +139,7 @@ class Sakrit:
         ledger: LeasedLedger,
         *,
         secret: bytes,
+        verify_secrets: tuple[bytes, ...] = (),
         adapter: RuntimeAdapter | None = None,
         lease_seconds: float = 30.0,
         wait_timeout: float = 30.0,
@@ -146,9 +147,33 @@ class Sakrit:
         self._ledger = ledger
         self._secret = secret
         # P5-3: a stable, non-reversible id for this deployment's HMAC secret, stamped on
-        # every row we claim so a *rotation* is detectable (the precondition for a dual-secret
-        # verify window instead of a fleet-wide DivergentRetry storm). Computed once.
+        # every row we claim so a *rotation* is detectable. Computed once.
         self._secret_id = secret_id(secret)
+        # The software dual-secret rotation window: sign new writes with `secret`, but keep
+        # `verify_secrets` (the just-retired secrets) in a keyring so an in-flight row signed by
+        # an old secret still verifies during the drain — no fleet-wide DivergentRetry storm on
+        # rotation. Keyed by secret_id (the row's provenance pivot). Empty → the single-secret
+        # behavior (a plain byte-compare of fingerprints, unchanged). To rotate: deploy with
+        # secret=<new>, verify_secrets=(<old>,); once no row is signed by <old>, drop it.
+        #
+        # A legacy pre-P5-3 row (secret_id NULL) verifies against `secret` (the primary), since
+        # it carries no provenance to route by — so drain NULL-provenance rows (or keep the
+        # secret that signed them as the primary) through their window, else a same-action retry
+        # of one trips a loud DivergentRetry (never a silent duplicate).
+        self._verify_secrets = verify_secrets
+        # Build the keyring, refusing a secret_id collision loudly: two *different* secrets that
+        # hash to one id would silently last-writer-win in a dict, then verify each other's rows
+        # under the wrong secret. Birthday-infeasible for real secrets, but a silent footgun if
+        # it ever happened — so detect it rather than drop one.
+        self._keyring: dict[str, bytes] = {}
+        for s in (secret, *verify_secrets):
+            sid = secret_id(s)
+            if sid in self._keyring and self._keyring[sid] != s:
+                raise SakritError(
+                    f"two distinct secrets in the rotation keyring collide on secret_id {sid!r} "
+                    "— refusing rather than silently verify rows under the wrong secret."
+                )
+            self._keyring[sid] = s
         self._adapter = adapter
         self._recovered = False
         self._registry: dict[str, EffectDecl] = {}  # tool identity → decl (for reconcile)
@@ -195,9 +220,10 @@ class Sakrit:
         key: str | None,
         scope: str | None,
         occurrence: int | None,
-    ) -> tuple[str, str, str, dict[str, object]]:
+    ) -> tuple[str, str, str, dict[str, object], Verifier | None]:
         """Shared prelude for guard/guard_async: run recovery once, merge the sk.step
-        context, resolve the coordinate. Returns ``(key, scope, fingerprint, kwargs)``."""
+        context, resolve the coordinate. Returns ``(key, scope, fingerprint, kwargs, verify)`` —
+        ``verify`` is the dual-secret verifier (None unless a rotation window is configured)."""
         self._register(decl)
         # Q14 — the engine guarantees recovery runs once per process, before the
         # first claim it issues. The Q1 fix removed claim's lazy safety net, so a
@@ -234,7 +260,24 @@ class Sakrit:
             coord.scope,
             fingerprint(decl, named, secret=self._secret),
             kw,
+            self._verifier(decl, named),
         )
+
+    def _verifier(self, decl: EffectDecl, named: Mapping[str, object]) -> Verifier | None:
+        """A dual-secret verifier bound to this call, or None when no rotation window is
+        configured (settle then byte-compares — the single-secret behavior, unchanged). The
+        closure recomputes the incoming args' fingerprint under the secret that signed a stored
+        row (identified by the row's secret_id), so an in-flight row survives a rotation."""
+        if not self._verify_secrets:
+            return None
+        keyring, primary = self._keyring, self._secret
+
+        def verify(stored_fp: str, stored_secret_id: str | None) -> bool:
+            return matches_fingerprint(
+                decl, named, stored_fp, stored_secret_id, keyring=keyring, primary_secret=primary
+            )
+
+        return verify
 
     def guard(
         self,
@@ -264,7 +307,9 @@ class Sakrit:
         untouched (nothing re-fires); a lossy round-trip is logged. Return JSON-native values
         (or handle the ``Replayed`` marker) if downstream code runs on the resume path."""
         _reject_async(fn)  # an async tool must use guard_async, not the sync record path
-        rkey, rscope, fp, kw = self._prepare(decl, fn, args, kwargs, step, key, scope, occurrence)
+        rkey, rscope, fp, kw, verify = self._prepare(
+            decl, fn, args, kwargs, step, key, scope, occurrence
+        )
         if self._leased:
             return settle_leased(
                 self._ledger,
@@ -284,6 +329,7 @@ class Sakrit:
                 lease_seconds=self._lease_seconds,
                 wait_timeout=self._wait_timeout,
                 secret_id=self._secret_id,
+                verify=verify,
             )
         return settle(
             self._ledger,
@@ -299,6 +345,7 @@ class Sakrit:
             clean_failures=decl.clean_failures,
             reconcilable=decl.reconcile is not None,
             secret_id=self._secret_id,
+            verify=verify,
         )
 
     async def guard_async(
@@ -322,7 +369,9 @@ class Sakrit:
         tool must yield to it at least every ``lease_seconds/3``; an await-less CPU-bound
         stretch longer than the lease can let it expire and a peer take over mid-dispatch."""
         _reject_lazy(fn)  # V-1: an async-generator is not awaitable; its body never runs
-        rkey, rscope, fp, kw = self._prepare(decl, fn, args, kwargs, step, key, scope, occurrence)
+        rkey, rscope, fp, kw, verify = self._prepare(
+            decl, fn, args, kwargs, step, key, scope, occurrence
+        )
         if self._leased:
             return await settle_leased_async(
                 self._ledger,
@@ -342,6 +391,7 @@ class Sakrit:
                 lease_seconds=self._lease_seconds,
                 wait_timeout=self._wait_timeout,
                 secret_id=self._secret_id,
+                verify=verify,
             )
         return await settle_async(
             self._ledger,
@@ -357,6 +407,7 @@ class Sakrit:
             clean_failures=decl.clean_failures,
             reconcilable=decl.reconcile is not None,
             secret_id=self._secret_id,
+            verify=verify,
         )
 
     def recover(self) -> None:

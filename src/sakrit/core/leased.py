@@ -26,6 +26,7 @@ from sakrit.core.ledger import ClaimKind, EffectState
 from sakrit.core.protocols import LeasedLedger
 from sakrit.core.reconcile import Reconciliation, Verdict
 from sakrit.core.seams import seam
+from sakrit.core.settle import Verifier, _fingerprint_ok
 
 logger = logging.getLogger("sakrit")
 
@@ -169,6 +170,7 @@ def settle_leased(
     wait_timeout: float = 30.0,
     poll: float = 0.01,
     secret_id: str | None = None,
+    verify: Verifier | None = None,
 ) -> object:
     """Run ``fn`` exactly once for ``key`` across concurrent workers, or return the
     winner's recorded result.
@@ -196,12 +198,15 @@ def settle_leased(
         )
 
         if claim.kind is ClaimKind.REPLAY:
-            if claim.fingerprint != fingerprint:
+            assert claim.fingerprint is not None
+            if not _fingerprint_ok(claim.fingerprint, claim.secret_id, fingerprint, verify):
                 raise DivergentRetry(f"{key}: identity args differ from the recorded action")
             ledger._tell_replay(key)  # V-2 rider: served-not-re-fired is told, not silent
             return claim.result
         if claim.kind is ClaimKind.AMBIGUOUS:
-            if claim.fingerprint is not None and claim.fingerprint != fingerprint:
+            if claim.fingerprint is not None and not _fingerprint_ok(
+                claim.fingerprint, claim.secret_id, fingerprint, verify
+            ):
                 raise DivergentRetry(  # P4-8: a different action colliding, not a retry
                     f"{key}: a different action collides on the key of a prior attempt whose "
                     "outcome is unresolved. This is not a retry of that action — refusing. "
@@ -358,6 +363,7 @@ async def settle_leased_async(
     wait_timeout: float = 30.0,
     poll: float = 0.01,
     secret_id: str | None = None,
+    verify: Verifier | None = None,
 ) -> object:
     """Await an async ``fn`` exactly once for ``key`` across concurrent workers, or return
     the winner's recorded result. The async twin of :func:`settle_leased`: identical
@@ -382,12 +388,15 @@ async def settle_leased_async(
         )
 
         if claim.kind is ClaimKind.REPLAY:
-            if claim.fingerprint != fingerprint:
+            assert claim.fingerprint is not None
+            if not _fingerprint_ok(claim.fingerprint, claim.secret_id, fingerprint, verify):
                 raise DivergentRetry(f"{key}: identity args differ from the recorded action")
             ledger._tell_replay(key)  # V-2 rider: served-not-re-fired is told, not silent
             return claim.result
         if claim.kind is ClaimKind.AMBIGUOUS:
-            if claim.fingerprint is not None and claim.fingerprint != fingerprint:
+            if claim.fingerprint is not None and not _fingerprint_ok(
+                claim.fingerprint, claim.secret_id, fingerprint, verify
+            ):
                 raise DivergentRetry(  # P4-8: a different action colliding, not a retry
                     f"{key}: a different action collides on the key of a prior attempt whose "
                     "outcome is unresolved. This is not a retry of that action — refusing. "
