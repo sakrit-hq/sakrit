@@ -115,9 +115,11 @@ def guarded_survives_crash_in_window(db: Path) -> int:
     """Scenario 3: the charge lands, the response is lost, the process restarts — one charge.
 
     This is an *in-process* model of the crash (we catch the timeout and reopen the ledger), so it
-    demonstrates the recovery *mechanism*, not a real SIGKILL — the kill-at-every-boundary evidence
-    is the chaos suite (``tests/chaos/``). At L2+R, recovery **reconciles**: it asks the provider
-    "did this charge land?" and adopts the answer.
+    demonstrates the recovery *mechanism* readably. A **real `os._exit` version of this exact money
+    scenario** — a child process hard-killed in the dual-write window — lives in ``crash_worker.py``
+    and is asserted by ``tests/integration/test_money_demo.py`` (the broader kill-at-every-boundary
+    matrix is ``tests/chaos/``). At L2+R, recovery **reconciles**: it asks the provider "did this
+    charge land?" and adopts the answer.
     """
     provider = FakePaymentProvider()
     provider.inject(COMMIT_THEN_TIMEOUT)  # first attempt captures, then the response vanishes

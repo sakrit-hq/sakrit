@@ -25,8 +25,12 @@ Three scenarios, each asserting how many times money actually moved:
 3. **Guarded, crashed in the dual-write window.** The provider *captures* the charge and then the
    response is lost — the process dies believing nothing happened. On restart, recovery **reconciles**
    the ambiguous row: at **L2+R** it asks the provider "did this charge land?", adopts the answer
-   (the row ends SUCCEEDED), and the app's retry replays it. Still one charge. (This is an in-process
-   model of the crash; the real kill-at-every-boundary evidence is the chaos suite, `tests/chaos/`.)
+   (the row ends SUCCEEDED), and the app's retry replays it. Still one charge.
+
+   `demo.py` models this crash *in-process* for readability. The **real thing** — a child process
+   hard-killed (`os._exit`) in the dual-write window — is `crash_worker.py`, asserted by
+   `tests/integration/test_money_demo.py`: the kill fires (exit 137), one charge landed, and recovery
+   resolves it to exactly one charge with the row SUCCEEDED.
 
 ## The pieces
 
