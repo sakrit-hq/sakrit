@@ -16,4 +16,4 @@ def test_core_error_base_is_importable() -> None:
 
 
 def test_spec_version() -> None:
-    assert v1.SPEC_VERSION == "1"
+    assert v1.SED_MAJOR == 1

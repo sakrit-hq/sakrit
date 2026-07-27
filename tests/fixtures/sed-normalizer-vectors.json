@@ -1,0 +1,128 @@
+{
+  "_comment": "SED builtin-normalizer conformance vectors (Q15). NORMATIVE, language-neutral: every language binding of the SED normalizers MUST reproduce output byte-for-byte. Python binding: src/sakrit/spec/normalizers.py; asserted by tests/unit/test_normalizers.py. Non-ASCII is written as \\uXXXX so the bytes are unambiguous across editors.",
+  "sed_normalizers_version": 1,
+  "vectors": {
+    "trim": [
+      {
+        "in": "  hello  ",
+        "out": "hello"
+      },
+      {
+        "in": "hello",
+        "out": "hello"
+      },
+      {
+        "in": "\t\n  hi \n",
+        "out": "hi"
+      },
+      {
+        "in": "",
+        "out": ""
+      },
+      {
+        "in": "a b",
+        "out": "a b"
+      },
+      {
+        "in": "   ",
+        "out": ""
+      }
+    ],
+    "nfc-trim": [
+      {
+        "in": "  cafe\u0301  ",
+        "out": "caf\u00e9",
+        "_note": "decomposed e + combining acute U+0301 -> composed U+00E9, then trim"
+      },
+      {
+        "in": "caf\u00e9",
+        "out": "caf\u00e9",
+        "_note": "already composed -> unchanged"
+      },
+      {
+        "in": "  x  ",
+        "out": "x"
+      }
+    ],
+    "email": [
+      {
+        "in": " Alice@Example.COM ",
+        "out": "alice@example.com"
+      },
+      {
+        "in": "user@domain.com",
+        "out": "user@domain.com"
+      },
+      {
+        "in": "MixedCase@X.Org",
+        "out": "mixedcase@x.org"
+      }
+    ],
+    "phone-e164": [
+      {
+        "in": "+1 (415) 555-0100",
+        "out": "+14155550100"
+      },
+      {
+        "in": "+14155550100",
+        "out": "+14155550100"
+      },
+      {
+        "in": "415-555-0100",
+        "out": "4155550100"
+      },
+      {
+        "in": " +44 20 7946 0958 ",
+        "out": "+442079460958"
+      }
+    ],
+    "url-canonical": [
+      {
+        "in": "HTTP://Example.COM:80/Path?q=1#frag",
+        "out": "http://example.com/Path?q=1"
+      },
+      {
+        "in": "https://Host.com:443/",
+        "out": "https://host.com/"
+      },
+      {
+        "in": "https://host.com:8443/x",
+        "out": "https://host.com:8443/x"
+      },
+      {
+        "in": "http://Example.com",
+        "out": "http://example.com"
+      }
+    ],
+    "money": [
+      {
+        "in": "1.5",
+        "out": "1.5"
+      },
+      {
+        "in": "1.50",
+        "out": "1.5"
+      },
+      {
+        "in": "1.500",
+        "out": "1.5"
+      },
+      {
+        "in": "$1,500.00",
+        "out": "1500"
+      },
+      {
+        "in": "100",
+        "out": "100"
+      },
+      {
+        "in": "-42.10",
+        "out": "-42.1"
+      },
+      {
+        "in": "0.00",
+        "out": "0"
+      }
+    ]
+  }
+}
