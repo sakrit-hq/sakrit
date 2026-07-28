@@ -37,10 +37,14 @@ didn't happen; the audit command is how you read it.
 
     ```python
     from sakrit import SqliteLedger
+    from sakrit.core import EffectState
 
     ledger = SqliteLedger("sakrit.db")
-    ledger.accept_late_evidence(key, failed=True)              # confirmed it never ran → retryable
-    ledger.accept_late_evidence(key, result={"id": "pi_..."})  # found the receipt → replays henceforth
+    for key in ledger.keys_in(EffectState.AMBIGUOUS):
+        # For each key, check the provider, then call *one* of these:
+        #   ledger.accept_late_evidence(key, failed=True)              # never ran → retryable
+        #   ledger.accept_late_evidence(key, result={"id": "pi_..."})  # it ran → record; replays
+        print(key)
     ```
 
     See the README's "Resolving an ambiguous effect" for the full walk (listing keys, the honesty rule).

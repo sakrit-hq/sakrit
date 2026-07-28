@@ -199,11 +199,9 @@ ledger = SqliteLedger("sakrit.db")
 for key in ledger.keys_in(EffectState.AMBIGUOUS):
     print(key)
 
-# 2. Check the provider for a given key, then record the truth — pick the *honest* one:
-#    - it provably never ran → free the row so a retry can fire it:
-ledger.accept_late_evidence(some_key, failed=True)
-#    - it DID run and you have the result → record it, and future calls replay it:
-ledger.accept_late_evidence(some_key, result={"id": "pi_..."})
+# 2. For a given key, check the provider, then record the truth — call *one* of these:
+#      ledger.accept_late_evidence(key, failed=True)              # provably never ran → retryable
+#      ledger.accept_late_evidence(key, result={"id": "pi_..."})  # it ran → record; replays henceforth
 ```
 
 Call `failed=True` only when you've confirmed the effect did **not** happen, and `result=…`
