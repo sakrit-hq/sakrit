@@ -25,7 +25,13 @@ extra (``pip install sakrit[langgraph]``); import this module explicitly so plai
 
 from __future__ import annotations
 
-from langgraph.config import get_config
+try:
+    from langgraph.config import get_config
+except ModuleNotFoundError as exc:  # G-8: name the extra, not a bare "No module named 'langgraph'"
+    raise ModuleNotFoundError(
+        "sakrit's LangGraph adapter requires LangGraph. "
+        'Install it with:  pip install "sakrit[langgraph]"'
+    ) from exc
 
 from sakrit.core.coordinate import Capabilities, Coordinate, Stability
 from sakrit.core.errors import SakritError

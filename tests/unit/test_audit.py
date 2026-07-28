@@ -93,6 +93,13 @@ def test_cli_audit_on_non_database_file_exits_cleanly(tmp_path: Path) -> None:
     assert main(["audit", str(junk)]) == 1  # rendered, not a traceback
 
 
+def test_negative_limit_refuses(ledger_db: Path) -> None:
+    # G-8: SQLite reads a negative LIMIT as *unlimited* — `--limit -1` would silently return
+    # everything instead of capping. Refuse rather than mislead.
+    with AuditQuery(ledger_db) as q, pytest.raises(SakritError, match="limit must be >= 0"):
+        list(q.rows(limit=-1))
+
+
 def test_string_time_filter_that_is_not_iso_refuses(ledger_db: Path) -> None:
     # A-5: a non-ISO string must fail closed, not silently match nothing ("all clear").
     with AuditQuery(ledger_db) as q, pytest.raises(SakritError, match="not ISO-8601"):

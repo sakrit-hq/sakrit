@@ -43,6 +43,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             "net for 'forgot to wrap', not a runtime guarantee: review each finding and "
             "either wrap it or annotate it `# sakrit: safe` / @sakrit.safe."
         ),
+        epilog=(
+            "exit codes:\n"
+            "  0   report mode (findings printed), or --check with no findings\n"
+            "  1   --check found at least one finding (incl. an unreadable file, SAKRIT000)\n"
+            "  2   usage error, or --output (-o) write failed"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     doctor.add_argument("paths", nargs="*", type=Path, help="files or directories (default: .)")
     doctor.add_argument("--check", action="store_true", help="exit nonzero on any finding (for CI)")

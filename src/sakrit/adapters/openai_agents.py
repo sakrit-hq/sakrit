@@ -53,7 +53,13 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 
-from agents.tool_context import ToolContext
+try:
+    from agents.tool_context import ToolContext
+except ModuleNotFoundError as exc:  # G-8: name the extra, not a bare "No module named 'agents'"
+    raise ModuleNotFoundError(
+        "sakrit's OpenAI Agents adapter requires the OpenAI Agents SDK. "
+        'Install it with:  pip install "sakrit[openai-agents]"'
+    ) from exc
 
 from sakrit.core.coordinate import Capabilities, Coordinate, Stability
 from sakrit.core.errors import SakritError

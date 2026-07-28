@@ -15,12 +15,17 @@ can do.
 
 | Level | Mechanism | What you get | Requires |
 |---|---|---|---|
-| **L3** | same-DB transaction (classic outbox) | **true exactly-once** | the effect target *is* the ledger DB |
+| **L3** † | same-DB transaction (classic outbox) | **true exactly-once** | the effect target *is* the ledger DB |
 | **L2+R** *(recommended for money)* | provider idempotency key **+** reconcile | effectively-exactly-once, no *silent* TTL cliff | a provider key and a "did this happen?" query |
 | **L2** | provider idempotency key pass-through | effectively-exactly-once **within the provider's key TTL**; loud `AMBIGUOUS` beyond it | key TTL longer than your retry horizon |
 | **L1** | reconcile on recovery ("did this happen?") | effectively-exactly-once after a confirmation window | a queryable provider read, consistency declared |
 | **L0** *(default, irreversible)* | write-ahead + halt on ambiguity | **at-most-once, ambiguity surfaced**, self-healing via late evidence | someone watches the resolution surface |
-| **L0-AL** *(opt-in)* | write-ahead + retry | at-least-once, duplicates **counted** | duplicates are tolerable |
+| **L0-AL** † *(opt-in)* | write-ahead + retry | at-least-once, duplicates **counted** | duplicates are tolerable |
+
+† **L3** and **L0-AL** are **format-declared but not yet honored by this runtime**: SED can express
+them, but binding a declaration at either level is **refused loudly** (`SpecError`) rather than
+silently downgraded to the L0 default. They land in a later phase; the rows document the format's
+full ladder, not the current runtime's.
 
 The **dual-write window** — a crash after the effect commits but before Sakrit records it — is why
 L0's floor is *at-most-once with a loud `AMBIGUOUS`*, not exactly-once. With zero provider

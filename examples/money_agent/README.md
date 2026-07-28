@@ -32,6 +32,26 @@ Three scenarios, each asserting how many times money actually moved:
    `tests/integration/test_money_demo.py`: the kill fires (exit 137), one charge landed, and recovery
    resolves it to exactly one charge with the row SUCCEEDED.
 
+### Run the real crash yourself
+
+`crash_worker.py` charges once per invocation against a durable ledger (`MONEY_DB`) and a durable
+provider "world" (`MONEY_WORLD`, one landed charge per line). Kill it mid-write, then restart it:
+
+```bash
+export MONEY_DB=/tmp/money.db MONEY_WORLD=/tmp/world.jsonl
+
+# 1. Inject the kill: the charge lands, then the process is hard-killed before the ledger records it.
+SAKRIT_TESTING=1 SAKRIT_CRASH_AT=after_dispatch python examples/money_agent/crash_worker.py
+echo "exit $?"                 # → 137 (killed), and world.jsonl already has 1 charge
+
+# 2. Restart with no kill: recovery reconciles the ambiguous row, the app replays.
+python examples/money_agent/crash_worker.py    # → worker: charged {...}
+
+wc -l /tmp/world.jsonl         # → 1  (exactly one charge, despite the crash + retry)
+```
+
+(The ledger leaves `/tmp/money.db` plus `-wal`/`-shm`/`.lock` sidecars; delete them to start fresh.)
+
 ## The pieces
 
 - **`provider.py`** — a Stripe-shaped fake payment provider: it deduplicates on an idempotency key and

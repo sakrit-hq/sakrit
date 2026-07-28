@@ -173,6 +173,10 @@ class AuditQuery:
         states alike (an operator auditing an incident wants ``EXECUTING`` and
         ``AMBIGUOUS`` rows *especially*).
         """
+        if limit is not None and limit < 0:
+            # G-8: SQLite treats a negative LIMIT as *unlimited* — a `--limit -1` asking to cap
+            # the output would silently return everything. Refuse rather than mislead.
+            raise SakritError(f"limit must be >= 0, got {limit}")
         clauses: list[str] = []
         params: list[object] = []
         if state is not None:

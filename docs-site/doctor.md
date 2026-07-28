@@ -35,7 +35,7 @@ is relativized for you.
 |---|---|
 | `0` | Clean, **or** findings present without `--check` (report mode still prints them) |
 | `1` | Findings present **and** `--check` was given (the CI gate fails) |
-| `2` | Usage / argument error |
+| `2` | Usage / argument error, **or** an `--output` (`-o`) file could not be written |
 
 `--check` affects only the exit code, never the output. These codes and the JSON/SARIF shapes are a
 frozen interface — CI consumers can depend on them.

@@ -41,3 +41,9 @@ def safe(fn: _F) -> _F:
     marker records that a human decided so.
     """
     return fn
+
+
+# G-8: ``Callable``/``TypeVar`` are only needed to construct ``_F`` above; drop them from the
+# package namespace so ``sakrit.Callable`` / ``sakrit.TypeVar`` don't leak as tab-completable
+# re-exports (they're stdlib, not part of the public surface — STABILITY promise 3).
+del Callable, TypeVar
