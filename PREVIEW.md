@@ -10,16 +10,27 @@ no telemetry, works offline.
 
 ## 1. Install (about 30 seconds)
 
-You have read access to the private repo, so install straight from git:
+Sakrit is on PyPI. Install a **pinned** version into a fresh virtualenv — pinning means your bug
+reports map to an exact version, and the venv keeps stock Homebrew/Debian Python from refusing the
+install under PEP 668 (`externally-managed-environment`):
+
+```bash
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install sakrit==0.0.2
+# framework adapters are optional extras:
+pip install "sakrit[langgraph]==0.0.2"
+```
+
+*Prefer to track the latest `main`?* You have read access to the private repo, so you can install
+from git instead — but this pulls **unpinned HEAD**, so please include the commit SHA in any bug
+report (`sakrit --version` reports the package version, not the git commit):
 
 ```bash
 pip install "git+https://github.com/sakrit-hq/sakrit.git"
-# framework adapters are optional extras:
-pip install "sakrit[langgraph] @ git+https://github.com/sakrit-hq/sakrit.git"
 ```
 
 If git prompts for credentials, use a GitHub personal access token with `repo` read scope as the
-password (or `gh auth login` first). No PyPI package exists yet — that lands at launch.
+password (or `gh auth login` first).
 
 ## 2. Scan your own agent (about 90 seconds)
 

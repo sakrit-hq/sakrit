@@ -143,10 +143,12 @@ consequential calls — HTTP mutations, Stripe charges, SMTP sends, boto3 verbs,
 that aren't under a Sakrit guard:
 
 ```bash
-pipx run sakrit doctor .            # zero-config scan
+sakrit doctor .                    # zero-config scan
 sakrit doctor --check .            # exit nonzero on findings (for CI)
 sakrit doctor --format sarif .     # upload to GitHub code scanning
 ```
+
+Not installed? `pipx run sakrit doctor .` runs the scan without installing anything.
 
 ### Runnable examples
 
