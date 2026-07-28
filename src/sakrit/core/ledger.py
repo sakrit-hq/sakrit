@@ -1071,12 +1071,25 @@ class SqliteLedger:
                 ),
             )
             return cur.rowcount > 0
+        # Execution truth outranks result fidelity (Q6/P1-4): the effect *ran*. If the result
+        # won't serialize, heal SUCCEEDED with a marker (replay returns it) — never raise,
+        # which would strand the row AMBIGUOUS and drop the truth the executor held (the one
+        # path where that principle is most load-bearing). Mirrors record_success / fence.
+        # Clear any stale ``error`` on the V-11 FAILED→SUCCEEDED heal, so the audit trail can't
+        # show a succeeded effect carrying a peer's clean-failure message.
+        encoded: str | None
+        marker: str | None
+        try:
+            encoded, marker = json.dumps(result), None
+        except (TypeError, ValueError):
+            encoded, marker = None, f"unserializable:{type(result).__name__}"
         cur = self.conn.execute(
-            "UPDATE effects SET state = ?, result = ?, resolved_by = ?, settled_at = ? "
-            "WHERE key = ? AND state IN (?, ?)",
+            "UPDATE effects SET state = ?, result = ?, result_ref = ?, error = NULL, "
+            "resolved_by = ?, settled_at = ? WHERE key = ? AND state IN (?, ?)",
             (
                 EffectState.SUCCEEDED.value,
-                json.dumps(result),
+                encoded,
+                marker,
                 "late_evidence",
                 _now(),
                 key,

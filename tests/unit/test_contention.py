@@ -1008,3 +1008,67 @@ def test_v11_clean_failure_late_evidence_never_overwrites_success() -> None:
     led.fence("k", 1, EffectState.SUCCEEDED, result="ok")
     assert led.accept_late_evidence("k", failed=True) is False  # success wins
     assert led.state_of("k") is EffectState.SUCCEEDED
+
+
+def test_g1_late_evidence_success_unserializable_records_marker_not_raises() -> None:
+    # G-1: accept_late_evidence's success arm is reached when a worker lost its lease
+    # mid-flight but RAN the effect. An unserializable result there must marker-ize (like
+    # record_success / fence), never raise a raw TypeError that strands the row AMBIGUOUS —
+    # execution truth outranks result fidelity on the one path where it is most load-bearing.
+    led = _led()
+    led.claim_leased("k", "s", "t", "fp", owner="A", now=100.0, lease_seconds=LEASE)
+    led.fence("k", 1, EffectState.EXECUTING)
+    led.claim_leased("k", "s", "t", "fp", owner="B", now=200.0, lease_seconds=LEASE)  # → AMBIGUOUS
+    assert led.state_of("k") is EffectState.AMBIGUOUS
+
+    class Weird:  # not JSON-serializable
+        pass
+
+    assert led.accept_late_evidence("k", result=Weird()) is True  # marker-ized, no raise
+    assert led.state_of("k") is EffectState.SUCCEEDED
+    row = led.conn.execute("SELECT result_ref, result FROM effects WHERE key='k'").fetchone()
+    assert row[0] == "unserializable:Weird"  # marker stored…
+    assert row[1] is None  # …and no bogus result payload
+    # Replay returns the marker, never a raise.
+    replay = led.claim_leased("k", "s", "t", "fp", owner="C", now=210.0, lease_seconds=LEASE)
+    assert replay.kind is ClaimKind.REPLAY
+    assert isinstance(replay.result, Replayed)
+
+
+def test_g1_leased_self_heal_unserializable_through_record_success_fenced() -> None:
+    # G-1 through the public leased path (Fable's reproduction shape): a forbidden takeover
+    # ambiguated the row; the true owner returns via _record_success_fenced with an
+    # unserializable result → healed with a marker, not a raw TypeError.
+    led = _led()
+    a = led.claim_leased("k", "s", "t", "fp", owner="A", now=100.0, lease_seconds=LEASE)
+    led.fence("k", a.fencing_token, EffectState.EXECUTING)
+    led.claim_leased("k", "s", "t", "fp", owner="B", now=200.0, lease_seconds=LEASE)  # forbidden
+    assert led.state_of("k") is EffectState.AMBIGUOUS
+
+    class Weird:  # not JSON-serializable
+        pass
+
+    _record_success_fenced(led, "k", a.fencing_token, Weird())  # A's stale token → late evidence
+    assert led.state_of("k") is EffectState.SUCCEEDED
+    assert (
+        led.conn.execute("SELECT result_ref FROM effects WHERE key='k'").fetchone()[0]
+        == "unserializable:Weird"
+    )
+
+
+def test_g1_late_evidence_success_clears_stale_error_on_v11_heal() -> None:
+    # G-1: a peer's clean-FAILED row (carrying its failure text) corrected to SUCCEEDED by the
+    # true executor (V-11) must not leave the failure message on the succeeded row — otherwise
+    # the audit trail shows a succeeded effect carrying another attempt's error.
+    led = _led()
+    led.claim_leased("k", "s", "t", "fp", owner="A", now=100.0, lease_seconds=LEASE)
+    led.fence("k", 1, EffectState.EXECUTING)
+    led.conn.execute(  # a peer fenced FAILED and (single-worker-style) left error text
+        "UPDATE effects SET state=?, error=? WHERE key=?",
+        (EffectState.FAILED.value, "ValueError: card 4242 declined", "k"),
+    )
+    assert led.accept_late_evidence("k", result="landed") is True  # success outranks
+    assert led.state_of("k") is EffectState.SUCCEEDED
+    row = led.conn.execute("SELECT error, result FROM effects WHERE key='k'").fetchone()
+    assert row[0] is None  # stale failure message cleared
+    assert json.loads(row[1]) == "landed"
