@@ -42,12 +42,19 @@ def test_benchmark_runs_and_reports_positive_numbers() -> None:
     assert all(v > 0 for v in per_call.values())
     # A real write costs more than the raw call...
     assert per_call["guarded_record_wal_full"] > per_call["raw_baseline"]
-    # ...and — the invariant the F-1 bug violated — a NORMAL *write* is clearly above a *replay*.
-    # If "NORMAL" were secretly the replay path again (the shared-DB masquerade), this fails.
-    # run() itself asserts this cross-config guard; we re-assert it here for documentation.
+    # ...and — the invariant the F-1 bug violated — a real *write* sits clearly above a *replay*.
+    # If a write config were secretly the replay path (the shared-DB masquerade), its median would
+    # collapse to replay level and this fails. run() self-asserts this for NORMAL; we assert it for
+    # BOTH write tiers here, so neither can masquerade unnoticed.
     assert per_call["guarded_record_wal_normal"] > per_call["guarded_replay"] * 1.5
-    # FULL (fsync every commit) is the slowest write tier.
-    assert per_call["guarded_record_wal_full"] > per_call["guarded_record_wal_normal"]
+    assert per_call["guarded_record_wal_full"] > per_call["guarded_replay"] * 1.5
+    # We deliberately do NOT assert FULL > NORMAL. That is a hardware-timing property (fsync every
+    # commit vs. fsync at checkpoint), not a Sakrit invariant: on tmpfs, a write-cached NVMe, or
+    # some CI filesystems the fsync tax is ~zero, so the ordering is environment-dependent and
+    # flakes (it inverted repeatedly at n=60). The durability *configuration* (synchronous=FULL vs
+    # NORMAL) is verified directly by PRAGMA reads in test_preconditions; the fsync tax is a
+    # reported number on the perf page, not a test assertion — this test checks *sane, positive*
+    # measurements, per its module docstring, not that a particular speed is met.
     # Tail percentiles are reported (p99 >= median), the F-7 fix.
     tail = result["tail_us"]["guarded_record_wal_full"]
     assert tail["p99"] >= tail["median"] and tail["max"] >= tail["p99"]
