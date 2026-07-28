@@ -44,8 +44,11 @@ class RegeneratedDuplicate(SakritError):
 class AmbiguousOutcome(SakritError):
     """An effect's outcome cannot be determined after a crash in the window.
 
-    The honest floor for an L0 tool: at-most-once with a loud flag. Resolved out of
-    band (reconcile, late evidence, or human ``sk.resolve``).
+    The honest floor for an L0 tool: at-most-once with a loud flag. Resolved out of band
+    with real evidence — a reconcile verdict, the leased self-heal, or an operator calling
+    :meth:`SqliteLedger.accept_late_evidence` once they know what happened at the provider
+    (see the README, "Resolving an ambiguous effect"). There is no automatic resolver: the
+    one thing a machine cannot know is what happened in the gap.
     """
 
 

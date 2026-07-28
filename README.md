@@ -80,6 +80,8 @@ def send_email(to: str, subject: str, body: str) -> str:
 (no extra needed) — this is the whole thing, dependency-free:
 
 ```python
+from sakrit import Sakrit, SqliteLedger, EffectDecl, ArgClass
+
 sk = Sakrit(SqliteLedger("sakrit.db"), secret=b"<per-deployment-secret>")
 
 CHARGE = EffectDecl(
@@ -88,9 +90,10 @@ CHARGE = EffectDecl(
 
 
 def charge_card(customer: str, amount_cents: int) -> dict:
-    return stripe.PaymentIntent.create(
-        customer=customer, amount=amount_cents
-    )  # Stripe amounts are in cents
+    # Your real provider call goes here, e.g.
+    #   return stripe.PaymentIntent.create(customer=customer, amount=amount_cents)
+    # (Stripe amounts are in cents.) A runnable stand-in so this block copy-pastes and runs:
+    return {"id": "pi_demo", "customer": customer, "amount": amount_cents}
 
 
 order_id = "4471"  # from your domain — the order this charge settles
@@ -171,6 +174,37 @@ onto a rung, and the semantics follow.
 
 "Never silent" is the part nobody else ships: at L0, a crash in the ambiguous window becomes
 a loud, surfaced `AMBIGUOUS` for a human to resolve — not a guess.
+
+### Resolving an ambiguous effect
+
+When a run raises `AmbiguousOutcome`, Sakrit is telling you the truth: a crash landed
+between an effect firing and its record, so it *can't* know whether the effect happened —
+and it refuses to guess. Every retry keeps raising until you supply the missing evidence.
+You resolve it out of band, on the ledger, once you've checked what actually happened at the
+provider. Do it as a one-off script with the worker stopped, so the ledger's single-writer
+lock is free:
+
+```python
+from sakrit import SqliteLedger
+from sakrit.core import EffectState
+
+ledger = SqliteLedger("sakrit.db")
+
+# 1. List what halted. `sakrit audit sakrit.db --state AMBIGUOUS` shows each key's tool + scope.
+for key in ledger.keys_in(EffectState.AMBIGUOUS):
+    print(key)
+
+# 2. Check the provider for a given key, then record the truth — pick the *honest* one:
+#    - it provably never ran → free the row so a retry can fire it:
+ledger.accept_late_evidence(some_key, failed=True)
+#    - it DID run and you have the result → record it, and future calls replay it:
+ledger.accept_late_evidence(some_key, result={"id": "pi_..."})
+```
+
+Call `failed=True` only when you've confirmed the effect did **not** happen, and `result=…`
+only when you have the real evidence that it did — that honesty is the whole guarantee.
+There is deliberately no automatic resolver: the one thing a machine cannot know is what
+happened in the gap, so a human closes it.
 
 ## Status
 

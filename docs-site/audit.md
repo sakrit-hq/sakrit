@@ -31,5 +31,16 @@ didn't happen; the audit command is how you read it.
 
 !!! info "Investigating an `AMBIGUOUS`"
     Filter `--state AMBIGUOUS` to list effects Sakrit halted on rather than guessed. Each is a place a
-    crash landed in the dual-write window at L0 — resolve it with real evidence (the effect either did
-    or didn't happen), and the row heals.
+    crash landed in the dual-write window at L0. `audit` is read-only — it shows you the halted rows but
+    cannot heal them. Once you've checked the provider and know the truth, record it out of band with
+    the worker stopped:
+
+    ```python
+    from sakrit import SqliteLedger
+
+    ledger = SqliteLedger("sakrit.db")
+    ledger.accept_late_evidence(key, failed=True)              # confirmed it never ran → retryable
+    ledger.accept_late_evidence(key, result={"id": "pi_..."})  # found the receipt → replays henceforth
+    ```
+
+    See the README's "Resolving an ambiguous effect" for the full walk (listing keys, the honesty rule).
