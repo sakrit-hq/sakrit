@@ -78,6 +78,21 @@ def test_missing_ledger_refuses(tmp_path: Path) -> None:
         AuditQuery(tmp_path / "nope.db")
 
 
+def test_non_database_file_refuses_with_typed_error(tmp_path: Path) -> None:
+    # G-7: a path to a real file that is not a SQLite database must raise a typed SakritError
+    # (CLI-renderable), not leak a raw sqlite3.DatabaseError traceback from a first-hour tool.
+    junk = tmp_path / "notes.txt"
+    junk.write_text("this is not a ledger\n")
+    with pytest.raises(SakritError, match="not a Sakrit ledger"):
+        AuditQuery(junk)
+
+
+def test_cli_audit_on_non_database_file_exits_cleanly(tmp_path: Path) -> None:
+    junk = tmp_path / "notes.txt"
+    junk.write_text("this is not a ledger\n")
+    assert main(["audit", str(junk)]) == 1  # rendered, not a traceback
+
+
 def test_string_time_filter_that_is_not_iso_refuses(ledger_db: Path) -> None:
     # A-5: a non-ISO string must fail closed, not silently match nothing ("all clear").
     with AuditQuery(ledger_db) as q, pytest.raises(SakritError, match="not ISO-8601"):

@@ -137,6 +137,14 @@ class AuditQuery:
             if "no such table" in str(exc).lower():
                 return
             raise
+        except sqlite3.DatabaseError as exc:
+            # The path exists but is not a SQLite database ("file is not a database") — a typo'd
+            # path to a non-ledger file. Refuse with a typed, CLI-renderable SakritError instead
+            # of letting a raw sqlite3.DatabaseError traceback escape a first-hour tool (G-7).
+            # (OperationalError is a DatabaseError subclass and is handled above, so a real
+            # ledger's "no such table" legacy case never reaches here.)
+            self._conn.close()
+            raise SakritError(f"{p} is not a Sakrit ledger (not a SQLite database)") from exc
         if row is None:
             return
         on_disk = int(row[0])
