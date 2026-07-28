@@ -145,6 +145,54 @@ def test_fence_succeeded_unserializable_records_marker_not_raises() -> None:
     assert isinstance(replay.result, Replayed)
 
 
+def _error_of(led: SqliteLedger, key: str) -> object:
+    return led.conn.execute("SELECT error FROM effects WHERE key = ?", (key,)).fetchone()[0]
+
+
+def test_g9_leased_clean_failure_via_fence_stores_error_text() -> None:
+    # G-9: a multi-worker clean failure through fence(FAILED) records *why*, parity with the
+    # single-worker record_failure — not a FAILED row with error=NULL.
+    led = _led()
+    a = led.claim_leased("k", "s", "t", "fp", owner="A", now=100.0, lease_seconds=LEASE)
+    led.fence("k", a.fencing_token, EffectState.EXECUTING)
+    assert led.fence("k", a.fencing_token, EffectState.FAILED, error="ValueError: card declined")
+    assert led.state_of("k") is EffectState.FAILED
+    assert _error_of(led, "k") == "ValueError: card declined"
+
+
+def test_g9_late_evidence_clean_failure_stores_error_text() -> None:
+    # G-9: the AMBIGUOUS→FAILED late-evidence heal also records the failure text.
+    led = _led()
+    led.claim_leased("k", "s", "t", "fp", owner="A", now=100.0, lease_seconds=LEASE)
+    led.fence("k", 1, EffectState.EXECUTING)
+    led.claim_leased("k", "s", "t", "fp", owner="B", now=200.0, lease_seconds=LEASE)  # → AMBIGUOUS
+    assert led.state_of("k") is EffectState.AMBIGUOUS
+    assert led.accept_late_evidence("k", failed=True, error="ValueError: bad input")
+    assert led.state_of("k") is EffectState.FAILED
+    assert _error_of(led, "k") == "ValueError: bad input"
+
+
+def test_g9_settle_leased_records_clean_failure_error_end_to_end() -> None:
+    # G-9 through the public leased path: a declared clean failure records FAILED WITH its text.
+    led = _led()
+
+    def boom() -> str:
+        raise ValueError("validation error before any I/O")
+
+    with pytest.raises(ValueError):
+        settle_leased(
+            led,
+            key="k",
+            scope="s",
+            tool="t",
+            fingerprint="fp",
+            fn=boom,
+            clean_failures=(ValueError,),
+        )
+    assert led.state_of("k") is EffectState.FAILED
+    assert _error_of(led, "k") == "ValueError: validation error before any I/O"
+
+
 def test_settle_leased_aborts_dispatch_when_lease_lost_before_fence() -> None:
     # P1-3: if fence(EXECUTING) no-ops (our token went stale — a peer took over between
     # claim and fence), settle_leased must NOT dispatch; it re-resolves and replays.
@@ -157,7 +205,7 @@ def test_settle_leased_aborts_dispatch_when_lease_lost_before_fence() -> None:
     class PeerStealsBeforeFence(SqliteLedger):
         stolen = False
 
-        def fence(self, key, token, state, *, result=None):  # type: ignore[no-untyped-def]
+        def fence(self, key, token, state, *, result=None, error=None):  # type: ignore[no-untyped-def]
             if state is EffectState.EXECUTING and not self.stolen:
                 self.stolen = True
                 # A peer takes over and completes the effect before our fence lands.
@@ -166,7 +214,7 @@ def test_settle_leased_aborts_dispatch_when_lease_lost_before_fence() -> None:
                     "result = ?, settled_at = ? WHERE key = ?",
                     (EffectState.SUCCEEDED.value, json.dumps("peer-result"), 0, key),
                 )
-            return super().fence(key, token, state, result=result)
+            return super().fence(key, token, state, result=result, error=error)
 
     led = PeerStealsBeforeFence(":memory:")
     out = settle_leased(led, key="k", scope="s", tool="t", fingerprint="fp", fn=fn)
@@ -177,13 +225,13 @@ def test_settle_leased_aborts_dispatch_when_lease_lost_before_fence() -> None:
 def test_settle_leased_times_out_if_lease_lost_and_never_resolves() -> None:
     # Belt: if the fence is lost but no peer result ever appears, we surface, not hang.
     class AlwaysLosesFence(SqliteLedger):
-        def fence(self, key, token, state, *, result=None):  # type: ignore[no-untyped-def]
+        def fence(self, key, token, state, *, result=None, error=None):  # type: ignore[no-untyped-def]
             if state is EffectState.EXECUTING:
                 # Bump the token so our fence is forever stale, but record nothing.
                 self.conn.execute(
                     "UPDATE effects SET fencing_token = fencing_token + 1 WHERE key = ?", (key,)
                 )
-            return super().fence(key, token, state, result=result)
+            return super().fence(key, token, state, result=result, error=error)
 
     led = AlwaysLosesFence(":memory:")
     try:

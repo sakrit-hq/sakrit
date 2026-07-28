@@ -1010,12 +1010,24 @@ class SqliteLedger:
             self.conn.execute("ROLLBACK")
             raise
 
-    def fence(self, key: str, token: int, state: EffectState, *, result: object = None) -> bool:
+    def fence(
+        self,
+        key: str,
+        token: int,
+        state: EffectState,
+        *,
+        result: object = None,
+        error: str | None = None,
+    ) -> bool:
         """A fenced state transition: applies only if ``token`` is still current.
 
         Returns whether it applied. A zombie worker whose lease was taken over
         carries a stale token, so its writes are rejected — it cannot corrupt a row
         it no longer owns.
+
+        ``error`` (G-9): the failure text for a FAILED transition, stored so a multi-worker
+        clean failure carries *why* in the audit trail — parity with single-worker
+        ``record_failure``. Ignored (written NULL) for any non-FAILED state.
         """
         terminal = state in _TERMINAL_STATES
         encoded: str | None = None
@@ -1028,6 +1040,9 @@ class SqliteLedger:
                 encoded = json.dumps(result)
             except (TypeError, ValueError):
                 marker = f"unserializable:{type(result).__name__}"
+        # Only a FAILED fence carries error text; every other transition writes NULL (SUCCEEDED
+        # clears any stale error — the "SUCCEEDED ⇒ no error" invariant, G-2).
+        error_text = error if state is EffectState.FAILED else None
         # P3-6a: terminal states are write-once. The token guard alone let a current-token
         # holder overwrite SUCCEEDED with FAILED (un-settling a landed effect) or un-terminal
         # an AMBIGUOUS row; require the *source* state to be non-terminal (mid-flight). The
@@ -1036,11 +1051,11 @@ class SqliteLedger:
         # re-claimable, but with a live lease a peer would BUSY-wait a whole lease before
         # re-claiming it; clearing the lease lets the next worker take over immediately.
         cur = self.conn.execute(
-            "UPDATE effects SET state = ?, result = ?, result_ref = ?, settled_at = ?, "
+            "UPDATE effects SET state = ?, result = ?, result_ref = ?, error = ?, settled_at = ?, "
             "lease_owner = CASE WHEN ? THEN NULL ELSE lease_owner END, "
             "lease_expires = CASE WHEN ? THEN NULL ELSE lease_expires END "
             "WHERE key = ? AND fencing_token = ? AND state NOT IN (?, ?, ?)",
-            (state.value, encoded, marker, _now() if terminal else None)
+            (state.value, encoded, marker, error_text, _now() if terminal else None)
             + (terminal, terminal, key, token)
             + _TERMINAL_VALUES,
         )
@@ -1066,7 +1081,7 @@ class SqliteLedger:
         return cur.rowcount > 0
 
     def accept_late_evidence(
-        self, key: str, result: object = None, *, failed: bool = False
+        self, key: str, result: object = None, *, failed: bool = False, error: str | None = None
     ) -> bool:
         """A returning owner's terminal outcome, recorded onto a row it no longer fences.
 
@@ -1085,10 +1100,11 @@ class SqliteLedger:
         """
         if failed:
             cur = self.conn.execute(
-                "UPDATE effects SET state = ?, resolved_by = ?, settled_at = ? "
+                "UPDATE effects SET state = ?, error = ?, resolved_by = ?, settled_at = ? "
                 "WHERE key = ? AND state = ?",
                 (
                     EffectState.FAILED.value,
+                    error,  # G-9: the clean-failure text, so a healed FAILED row says why
                     "late_evidence",
                     _now(),
                     key,

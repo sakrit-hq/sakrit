@@ -88,16 +88,23 @@ def _record_success_fenced(
     )
 
 
-def _record_failure_fenced(ledger: LeasedLedger, key: str, token: int) -> None:
+def _record_failure_fenced(
+    ledger: LeasedLedger, key: str, token: int, error: str | None = None
+) -> None:
     """Record a declared clean failure (the effect did NOT run → FAILED, re-claimable). If the
     fence is rejected because we lost the lease mid-dispatch, self-heal like the success path
     (V-11 / item 6): if a forbidden takeover ambiguated our row, contribute the clean failure as
     late evidence (AMBIGUOUS→FAILED) so a clean-failed zombie *frees* the row instead of
-    stranding it AMBIGUOUS forever. If a peer already SUCCEEDED, success wins — leave it."""
-    if ledger.fence(key, token, EffectState.FAILED):
+    stranding it AMBIGUOUS forever. If a peer already SUCCEEDED, success wins — leave it.
+
+    ``error`` (G-9) is the failure text, threaded to both the fence and the late-evidence arm so
+    a multi-worker clean failure records *why* — parity with single-worker ``record_failure``."""
+    if ledger.fence(key, token, EffectState.FAILED, error=error):
         return
     state = ledger.state_of(key)
-    if state is EffectState.AMBIGUOUS and ledger.accept_late_evidence(key, failed=True):
+    if state is EffectState.AMBIGUOUS and ledger.accept_late_evidence(
+        key, failed=True, error=error
+    ):
         logger.warning("sakrit: %s clean-failure freed a spuriously-ambiguated row (→ FAILED)", key)
         return
     logger.warning(
@@ -279,7 +286,9 @@ def settle_leased(
                     thread.join()
         except BaseException as exc:
             if isinstance(exc, clean_failures):
-                _record_failure_fenced(ledger, key, token)  # V-11: self-heal on a rejected fence
+                # G-9: thread the failure text (same format as record_failure) so a multi-worker
+                # clean failure records *why* in the audit trail, not a FAILED row with error=NULL.
+                _record_failure_fenced(ledger, key, token, f"{type(exc).__name__}: {exc}")
             raise
         finally:
             _current_key.reset(set_token)
@@ -459,7 +468,9 @@ async def settle_leased_async(
                 await _stop_heartbeat_async(beat)  # stop before any post-dispatch write
         except BaseException as exc:
             if isinstance(exc, clean_failures):
-                _record_failure_fenced(ledger, key, token)  # V-11: self-heal on a rejected fence
+                # G-9: thread the failure text (same format as record_failure) so a multi-worker
+                # clean failure records *why* in the audit trail, not a FAILED row with error=NULL.
+                _record_failure_fenced(ledger, key, token, f"{type(exc).__name__}: {exc}")
             raise
         finally:
             _current_key.reset(set_token)

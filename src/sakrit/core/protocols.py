@@ -117,12 +117,20 @@ class LeasedLedger(Ledger, Protocol):
         verify: Callable[[str, str | None], bool] | None = None,
     ) -> Claim: ...
 
-    def fence(self, key: str, token: int, state: EffectState, *, result: object = None) -> bool: ...
+    def fence(
+        self,
+        key: str,
+        token: int,
+        state: EffectState,
+        *,
+        result: object = None,
+        error: str | None = None,
+    ) -> bool: ...
 
     def heartbeat(
         self, key: str, owner: str, lease_seconds: float, now: float | None = None
     ) -> bool: ...
 
     def accept_late_evidence(
-        self, key: str, result: object = None, *, failed: bool = False
+        self, key: str, result: object = None, *, failed: bool = False, error: str | None = None
     ) -> bool: ...
