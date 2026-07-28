@@ -12,7 +12,7 @@ CLAIMED as INTENDED, and only then is it re-claimable.
 import pytest
 
 from sakrit.core import EffectState, SqliteLedger
-from sakrit.core.errors import EffectInFlightError
+from sakrit.core.errors import DivergentRetry, EffectInFlightError
 from sakrit.core.ledger import ClaimKind
 
 
@@ -38,10 +38,28 @@ def test_recovery_blesses_claimed_leftover_as_intended() -> None:
 
 
 def test_intended_is_re_claimable() -> None:
-    """Recovery-blessed INTENDED re-owns to PROCEED on the next attempt."""
+    """Recovery-blessed INTENDED re-owns to PROCEED on a retry of the *same* action.
+
+    A genuine retry recomputes the same fingerprint (identity args are the same) → it re-owns.
+    """
     led = SqliteLedger(":memory:")
     _claim(led)
     led.recover()  # CLAIMED → INTENDED
-    claim = led.claim("k", "run-1", "t.send", "fp2")
+    claim = led.claim("k", "run-1", "t.send", "fp")  # same action → same fingerprint
     assert claim.kind is ClaimKind.PROCEED
     assert led.state_of("k") is EffectState.CLAIMED  # re-owned, fresh fingerprint
+
+
+def test_divergent_retry_of_intended_refuses() -> None:
+    """G-2: re-owning an INTENDED row with DIFFERENT identity args is a divergent retry.
+
+    A fingerprint only differs when the identity args differ — i.e. a genuinely different
+    action colliding on the key. The key names one action, not one tool, so refuse it (loudly,
+    matching the leased path and the documented model) rather than fire a different action.
+    """
+    led = SqliteLedger(":memory:")
+    _claim(led)  # signs "fp"
+    led.recover()  # CLAIMED → INTENDED
+    with pytest.raises(DivergentRetry, match="divergent retry"):
+        led.claim("k", "run-1", "t.send", "fp-different")
+    assert led.state_of("k") is EffectState.INTENDED  # untouched (rolled back)

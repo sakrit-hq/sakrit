@@ -69,6 +69,7 @@ def _decide(
         provider_ttl_s=provider_ttl_s,
         reconcilable=reconcilable,
         secret_id=secret_id,
+        verify=verify,  # G-2: rotation-aware divergence gate on the re-own path
     )
     if claim.kind is ClaimKind.REPLAY:
         assert claim.fingerprint is not None  # a SUCCEEDED row always carries its fingerprint

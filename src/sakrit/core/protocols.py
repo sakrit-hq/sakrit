@@ -15,10 +15,11 @@ obligation lives on the method that carries it (see ``docs/dev-notes/ledger-prot
 - ``claim`` / ``claim_leased`` — SQLite's ``BEGIN IMMEDIATE`` (writer-lock-at-BEGIN) has no
   Postgres analogue: use ``SELECT … FOR UPDATE`` + ``INSERT … ON CONFLICT`` (two workers
   inserting one new key otherwise raises a unique violation under MVCC), plus
-  serialization-failure retries. The claim MUST remain atomic-per-key. ``claim_leased``'s
-  takeover divergence gate MUST compare through the ``verify`` callable when it is supplied
-  (the dual-secret rotation window, C-1), not a raw byte-compare of the stored fingerprint —
-  else a rotation bricks every old-signed non-terminal row.
+  serialization-failure retries. The claim MUST remain atomic-per-key. Both ``claim``'s
+  re-own divergence gate (G-2) and ``claim_leased``'s takeover divergence gate MUST compare
+  through the ``verify`` callable when it is supplied (the dual-secret rotation window, C-1),
+  not a raw byte-compare of the stored fingerprint — else a rotation bricks every old-signed
+  re-ownable row. Both paths refuse a *divergent* retry of a provably-not-run row identically.
 - ``recover`` / ``pending_reconcile`` — the scan wants ``SKIP LOCKED`` thinking, and MUST
   read committed state.
 - ``fence`` — the conditional UPDATE-by-token ports cleanly, but MUST stay a single
@@ -59,6 +60,7 @@ class Ledger(Protocol):
         provider_ttl_s: float | None = None,
         reconcilable: bool = False,
         secret_id: str | None = None,
+        verify: Callable[[str, str | None], bool] | None = None,
     ) -> Claim: ...
 
     def mark_executing(self, key: str) -> None: ...

@@ -182,6 +182,101 @@ def test_declared_clean_failure_is_reattemptable() -> None:
     assert led.state_of(key) is EffectState.SUCCEEDED
 
 
+def test_g2_plain_divergent_retry_of_a_failed_row_refuses() -> None:
+    # G-2: a clean FAILED row retried with DIFFERENT identity args is a divergent retry — the
+    # key names one action, not one tool. The plain path used to silently re-own it (fire the
+    # new action); now it refuses loudly, matching the leased path and the documented model.
+    led = SqliteLedger(":memory:")
+    key = _key()
+
+    def boom(**k: object) -> str:
+        raise ValueError("v")
+
+    with pytest.raises(ValueError):
+        settle(
+            led, key=key, scope="run-1", tool="email.send",
+            fingerprint=_fp(to="a@x.com"), fn=boom, clean_failures=(ValueError,),
+        )  # fmt: skip
+    assert led.state_of(key) is EffectState.FAILED
+
+    fired: list[int] = []
+    with pytest.raises(DivergentRetry, match="divergent retry"):
+        settle(
+            led, key=key, scope="run-1", tool="email.send",
+            fingerprint=_fp(to="b@x.com"), fn=lambda: fired.append(1),
+            clean_failures=(ValueError,),
+        )  # fmt: skip
+    assert fired == []  # the divergent action never fired…
+    assert led.state_of(key) is EffectState.FAILED  # …and the row is untouched (rolled back)
+
+
+def test_g2_divergent_retry_of_failed_refuses_identically_on_both_paths() -> None:
+    # G-2 consistency (Fable's cell): the same divergent retry of a provably-not-run FAILED row
+    # raises DivergentRetry on BOTH the single-worker (plain) and multi-worker (leased) paths —
+    # no dev→fleet semantic cliff.
+    plain = SqliteLedger(":memory:")
+    plain.claim("k", "s", "email.send", _fp(to="a@x.com"))
+    plain.record_failure("k", ValueError("boom"))
+    with pytest.raises(DivergentRetry):
+        plain.claim("k", "s", "email.send", _fp(to="b@x.com"))
+
+    leased = SqliteLedger(":memory:")
+    leased.claim_leased(
+        "k", "s", "email.send", _fp(to="a@x.com"), owner="A", lease_seconds=30.0, now=100.0
+    )
+    leased.record_failure("k", ValueError("boom"))
+    with pytest.raises(DivergentRetry):
+        leased.claim_leased(
+            "k", "s", "email.send", _fp(to="b@x.com"), owner="B", lease_seconds=30.0, now=200.0
+        )
+
+
+def test_g2_plain_reown_divergence_gate_is_rotation_aware() -> None:
+    # G-2 must not repeat C-1's rotation false-positive: a SAME-action retry of an old-signed
+    # FAILED row, verified through the rotation window, re-owns (PROCEED) — not DivergentRetry;
+    # a genuinely divergent action (verify=False) still refuses.
+    from sakrit.core.ledger import ClaimKind
+
+    ok = SqliteLedger(":memory:")
+    ok.claim("k", "s", "email.send", "OLD-signed-fp")
+    ok.record_failure("k", ValueError("x"))
+    proceed = ok.claim("k", "s", "email.send", "NEW-signed-fp", verify=lambda stored, sid: True)
+    assert proceed.kind is ClaimKind.PROCEED  # rotation-aware: same action re-owns
+
+    div = SqliteLedger(":memory:")
+    div.claim("k", "s", "email.send", "OLD-signed-fp")
+    div.record_failure("k", ValueError("x"))
+    with pytest.raises(DivergentRetry):
+        div.claim("k", "s", "email.send", "NEW-signed-fp", verify=lambda stored, sid: False)
+
+
+def test_g2_record_success_clears_stale_error_from_a_prior_failure() -> None:
+    # G-2 bonus: a row that cleanly FAILED (error text stored) then succeeds on retry must not
+    # carry the prior failure message onto its SUCCEEDED record (an audit-trail lie).
+    led = SqliteLedger(":memory:")
+    key = _key()
+    fp = _fp(to="a@x.com")
+
+    def boom(**k: object) -> str:
+        raise ValueError("card 4242 declined")
+
+    with pytest.raises(ValueError):
+        settle(
+            led, key=key, scope="run-1", tool="email.send",
+            fingerprint=fp, fn=boom, clean_failures=(ValueError,),
+        )  # fmt: skip
+    assert led.conn.execute("SELECT error FROM effects WHERE key=?", (key,)).fetchone()[0]
+
+    out = settle(
+        led, key=key, scope="run-1", tool="email.send",
+        fingerprint=fp, fn=lambda: "ok", clean_failures=(ValueError,),
+    )  # fmt: skip
+    assert out == "ok"
+    row = led.conn.execute("SELECT state, error FROM effects WHERE key=?", (key,)).fetchone()
+    assert row[0] == EffectState.SUCCEEDED.value
+    assert row[1] is None  # stale failure text cleared
+
+
 def test_unserializable_result_records_succeeded_and_replays_as_marker() -> None:
     # Execution truth outranks result fidelity: an unstorable result must still
     # record SUCCEEDED (never FAILED), and replay must not re-execute.

@@ -526,8 +526,14 @@ class SqliteLedger:
         provider_ttl_s: float | None = None,
         reconcilable: bool = False,
         secret_id: str | None = None,
+        verify: Callable[[str, str | None], bool] | None = None,
     ) -> Claim:
-        """Atomically decide what to do with ``key`` and take ownership if we run it."""
+        """Atomically decide what to do with ``key`` and take ownership if we run it.
+
+        ``verify`` (G-2) is the dual-secret verifier: on the re-own path (INTENDED/FAILED),
+        a divergent retry is refused rotation-awarely (recomputing the incoming args under the
+        row's signing secret), exactly as the leased takeover gate does (C-1). ``None`` →
+        byte-compare (single-secret, unchanged)."""
         self._bind_claim_thread()  # V-3
         self.conn.execute("BEGIN IMMEDIATE")
         try:
@@ -591,11 +597,28 @@ class SqliteLedger:
                 else:
                     # Re-own and retry: INTENDED (recovery blessed a crash-before-dispatch
                     # leftover) or a declared-clean FAILED — the effect provably never
-                    # completed. Fresh fingerprint for the retry, re-stamped with the current
-                    # scheme provenance (P5-3): this attempt is being made by *this* build.
+                    # completed. G-2: a *divergent* retry (different identity args) is refused
+                    # here, exactly as the leased takeover gate refuses it (C-1) — the key names
+                    # one action, not one tool; the single- and multi-worker paths must not
+                    # disagree (dev vs fleet). Rotation-aware via ``verify`` so a rotated secret
+                    # is not mistaken for a divergent action. Raised inside the transaction →
+                    # the row is left untouched (the outer ROLLBACK).
+                    if row[2] is not None and not _fp_matches_stored(
+                        row[2], row[6], fingerprint, verify
+                    ):
+                        raise DivergentRetry(
+                            f"{key}: identity args differ from the recorded (clean-failed / "
+                            "not-yet-run) action for this key — the key names one action, not "
+                            "one tool; refusing to re-own it for a divergent retry. (If you just "
+                            "rotated the HMAC secret, add the old secret to verify_secrets — a "
+                            "rotated-out secret can look like this.)"
+                        )
+                    # Fresh fingerprint for the retry, re-stamped with the current scheme
+                    # provenance (P5-3): this attempt is being made by *this* build. Clear any
+                    # prior attempt's error so the retry starts clean.
                     self.conn.execute(
-                        "UPDATE effects SET state = ?, fingerprint = ?, key_version = ?, "
-                        "fingerprint_version = ?, secret_id = ? WHERE key = ?",
+                        "UPDATE effects SET state = ?, fingerprint = ?, error = NULL, "
+                        "key_version = ?, fingerprint_version = ?, secret_id = ? WHERE key = ?",
                         (
                             EffectState.CLAIMED.value,
                             fingerprint,
@@ -644,8 +667,10 @@ class SqliteLedger:
         except (TypeError, ValueError):
             encoded, marker = None, f"unserializable:{type(result).__name__}"
         self.conn.execute(
-            "UPDATE effects SET state = ?, result = ?, result_ref = ?, settled_at = ? "
-            "WHERE key = ?",
+            # G-2: clear error — a row re-owned from a clean FAILED must not carry the prior
+            # attempt's failure text onto its SUCCEEDED record (an audit-trail lie).
+            "UPDATE effects SET state = ?, result = ?, result_ref = ?, error = NULL, "
+            "settled_at = ? WHERE key = ?",
             (EffectState.SUCCEEDED.value, encoded, marker, _now(), key),
         )
         self._tally(SETTLED)  # single-worker fresh success
