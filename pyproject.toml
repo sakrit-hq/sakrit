@@ -67,6 +67,21 @@ path = "src/sakrit/__about__.py"
 [tool.hatch.build.targets.wheel]
 packages = ["src/sakrit"]
 
+[tool.hatch.build.targets.sdist]
+# G-10: ship only source, tests, and project metadata. Without this, hatchling's default sdist
+# bundles landing/, .github/, docs-site/, mkdocs.yml — and PREVIEW.md, a pre-launch preview doc
+# with no business inside a PyPI artifact. pyproject.toml is always included by hatchling.
+include = [
+    "/src/sakrit",
+    "/tests",
+    "/README.md",
+    "/LICENSE",
+    "/STABILITY.md",
+    "/SECURITY.md",
+    "/CONTRIBUTING.md",
+    "/CODE_OF_CONDUCT.md",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # --strict-markers: a typo'd marker (e.g. -m "choas") is an error, not a silent zero-select that
