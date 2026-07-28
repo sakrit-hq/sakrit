@@ -67,10 +67,42 @@ def test_missing_sed_is_refused() -> None:
 
 
 def test_unknown_optional_top_field_is_ignored(caplog: pytest.LogCaptureFixture) -> None:
-    with caplog.at_level(logging.INFO, logger="sakrit.spec"):
+    with caplog.at_level(logging.WARNING, logger="sakrit.spec"):
         doc = parse_sed({"sed": 1, "tool": "t", "future_field": {"x": 1}})
-    assert doc.tool == "t"  # forward-compat: unknown optional ignored, not fatal
-    assert any("future_field" in r.message for r in caplog.records)
+    assert doc.tool == "t"  # forward-compat: unknown optional TOP-LEVEL field ignored, not fatal
+    rec = [r for r in caplog.records if "future_field" in r.message]
+    assert rec and rec[0].levelno == logging.WARNING  # G-4: WARNING, not invisible INFO
+
+
+def test_nested_unknown_arg_field_is_refused() -> None:
+    # G-4 (Fable's cell): a typo'd nested key (`normalise` for `normalize`) was silently
+    # swallowed → the declared dedup tolerance was absent, surfacing later as a confusing
+    # DivergentRetry storm on case-variant values. A nested block's shape is fixed within a
+    # major, so refuse the typo loudly at declaration.
+    with pytest.raises(SpecError, match="unknown field 'normalise'"):
+        parse_sed({"sed": 1, "tool": "t", "args": {"email": {"normalise": "email"}}})
+
+
+@pytest.mark.parametrize(
+    "doc",
+    [
+        {"sed": 1, "tool": "t", "provider_key": {"param": "k", "ttls": 60}},
+        {"sed": 1, "tool": "t", "reconcile": {"ref": "python:m:f", "windows_s": 30}},
+        {"sed": 1, "tool": "t", "result": {"replays": "value"}},
+        {"sed": 1, "tool": "t", "result": {"refetch": {"ref": "python:m:f", "field": []}}},
+        {"sed": 1, "tool": "t", "ambiguous": {"defaults": "halt"}},
+        {"sed": 1, "tool": "t", "fingerprint": {"ver": 1}},
+    ],
+)
+def test_nested_unknown_field_in_a_block_is_refused(doc: dict[str, object]) -> None:
+    with pytest.raises(SpecError, match="unknown field"):
+        parse_sed(doc)
+
+
+def test_x_prefixed_extension_key_is_allowed_in_a_block() -> None:
+    # An `x-`-prefixed key is a reserved private-extension namespace — allowed through, not fatal.
+    doc = parse_sed({"sed": 1, "tool": "t", "args": {"a": {"class": "identity", "x-note": "hi"}}})
+    assert doc.args["a"].cls == "identity"
 
 
 # --- unknown enum values refused ------------------------------------------

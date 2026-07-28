@@ -127,6 +127,22 @@ def _as_mapping(v: object, where: str) -> Mapping[str, object]:
     return v
 
 
+def _reject_unknown_keys(m: Mapping[str, object], allowed: frozenset[str], where: str) -> None:
+    """Fail closed on an unknown key inside a known block (G-4 / STABILITY promise 2).
+
+    A nested block's shape is fixed within a SED major, so an unknown key there is a typo
+    (``normalise`` for ``normalize``), not forward-compat — and swallowing it silently would
+    leave a *declared tolerance absent* (the exact weakened-guarantee shape). Refuse it, naming
+    the block. An ``x-``-prefixed key is a reserved private-extension namespace, allowed through.
+    (Unknown *top-level* fields stay lenient — a future minor may add a whole new section.)"""
+    for k in m:
+        if k not in allowed and not (isinstance(k, str) and k.startswith("x-")):
+            raise SpecError(
+                f"{where}: unknown field {k!r}; known fields are {sorted(allowed)} "
+                "(use an 'x-' prefix for a private extension)"
+            )
+
+
 def _req_str(m: Mapping[str, object], key: str, where: str) -> str:
     if key not in m:
         raise SpecError(f"{where}: missing required field {key!r}")
@@ -181,8 +197,18 @@ def _is_identity_typed(name: str, spec: ArgSpec) -> bool:
     return name == "id" or name.endswith("_id")
 
 
+_ARG_KEYS = frozenset({"class", "normalize", "type", "force"})
+_PROVIDER_KEY_KEYS = frozenset({"param", "ttl_s", "encoding"})
+_RECONCILE_KEYS = frozenset({"ref", "window_s", "provider_read"})
+_RESULT_KEYS = frozenset({"replay", "refetch"})
+_REFETCH_KEYS = frozenset({"ref", "fields"})
+_AMBIGUOUS_KEYS = frozenset({"default", "escalate_after_s"})
+_FINGERPRINT_KEYS = frozenset({"version"})
+
+
 def _parse_arg(name: str, raw: object) -> ArgSpec:
     m = _as_mapping(raw, f"args.{name}")
+    _reject_unknown_keys(m, _ARG_KEYS, f"args.{name}")
     cls = _enum(
         _opt_str(m, "class", f"args.{name}") or "identity", ARG_CLASSES, f"args.{name}.class"
     )
@@ -215,6 +241,7 @@ def _parse_arg(name: str, raw: object) -> ArgSpec:
 
 def _parse_provider_key(raw: object) -> ProviderKeySpec:
     m = _as_mapping(raw, "provider_key")
+    _reject_unknown_keys(m, _PROVIDER_KEY_KEYS, "provider_key")
     return ProviderKeySpec(
         param=_req_str(m, "param", "provider_key"),
         ttl_s=_opt_num(m, "ttl_s", "provider_key"),
@@ -224,6 +251,7 @@ def _parse_provider_key(raw: object) -> ProviderKeySpec:
 
 def _parse_reconcile(raw: object) -> ReconcileSpec:
     m = _as_mapping(raw, "reconcile")
+    _reject_unknown_keys(m, _RECONCILE_KEYS, "reconcile")
     return ReconcileSpec(
         ref=_req_str(m, "ref", "reconcile"),
         window_s=_opt_num(m, "window_s", "reconcile"),
@@ -237,10 +265,12 @@ def _parse_reconcile(raw: object) -> ReconcileSpec:
 
 def _parse_result(raw: object) -> ResultSpec:
     m = _as_mapping(raw, "result")
+    _reject_unknown_keys(m, _RESULT_KEYS, "result")
     replay = _enum(_opt_str(m, "replay", "result") or "value", REPLAY_MODES, "result.replay")
     refetch: RefetchSpec | None = None
     if "refetch" in m and m["refetch"] is not None:
         rm = _as_mapping(m["refetch"], "result.refetch")
+        _reject_unknown_keys(rm, _REFETCH_KEYS, "result.refetch")
         raw_fields = rm.get("fields", [])
         if not isinstance(raw_fields, (list, tuple)) or not all(
             isinstance(f, str) for f in raw_fields
@@ -254,6 +284,7 @@ def _parse_result(raw: object) -> ResultSpec:
 
 def _parse_ambiguous(raw: object) -> AmbiguousSpec:
     m = _as_mapping(raw, "ambiguous")
+    _reject_unknown_keys(m, _AMBIGUOUS_KEYS, "ambiguous")
     return AmbiguousSpec(
         default=_enum(
             _opt_str(m, "default", "ambiguous") or "halt", AMBIGUOUS_DEFAULTS, "ambiguous.default"
@@ -264,6 +295,7 @@ def _parse_ambiguous(raw: object) -> AmbiguousSpec:
 
 def _parse_fingerprint(raw: object) -> FingerprintSpec:
     m = _as_mapping(raw, "fingerprint")
+    _reject_unknown_keys(m, _FINGERPRINT_KEYS, "fingerprint")
     v = m.get("version", 1)
     if isinstance(v, bool) or not isinstance(v, int):
         raise SpecError(f"fingerprint.version: expected an integer, got {v!r}")
@@ -307,7 +339,9 @@ def parse_sed(doc: Mapping[str, object]) -> SedDocument:
 
     for k in doc:
         if k not in _TOP_KEYS:
-            _log.info("SED: ignoring unknown optional field %r (minor forward-compat)", k)
+            # Top-level stays lenient (a future minor may add a whole new section) but is now
+            # WARNING, not INFO — invisible under default logging is how a typo hides (G-4).
+            _log.warning("SED: ignoring unknown top-level field %r (minor forward-compat)", k)
 
     tool = _req_str(doc, "tool", "SED")
 

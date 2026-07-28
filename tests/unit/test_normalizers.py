@@ -51,6 +51,15 @@ def test_unknown_normalizer_fails_closed() -> None:
         normalize("no-such-normalizer", "x")
 
 
+def test_effectdecl_unknown_normalizer_refused_at_construction() -> None:
+    # G-4 parity: EffectDecl validates normalizer names at construction (fail-closed), matching
+    # the SED parser's args.<name>.normalize check — not deferred to the first fingerprint.
+    from sakrit.core import ArgClass, EffectDecl, SakritError
+
+    with pytest.raises(SakritError, match="unknown normalizer"):
+        EffectDecl("t", {"a": ArgClass.IDENTITY}, normalizers={"a": "no-such-normalizer"})
+
+
 def test_money_rejects_non_numeric() -> None:
     with pytest.raises(NormalizerError, match="money"):
         normalize("money", "free")

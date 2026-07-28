@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from sakrit.core.errors import SakritError
+from sakrit.core.normalizers import NORMALIZER_NAMES
 from sakrit.core.reconcile import Reconciliation
 
 
@@ -96,6 +97,16 @@ class EffectDecl:
     assumption; assert ``strong`` explicitly to unlock auto-retry."""
 
     def __post_init__(self) -> None:
+        # G-4 parity: validate normalizer names at construction (fail-closed), matching the SED
+        # parser's ``args.<name>.normalize`` check — rather than letting a typo surface only at
+        # the first fingerprint. An unknown normalizer means the declared dedup tolerance is
+        # silently absent.
+        for arg, norm in self.normalizers.items():
+            if norm not in NORMALIZER_NAMES:
+                raise SakritError(
+                    f"{self.tool}: normalizers[{arg!r}] names an unknown normalizer {norm!r}; "
+                    f"builtins are {sorted(NORMALIZER_NAMES)}"
+                )
         for exc_type in self.clean_failures:
             if _encompasses_timeout(exc_type):
                 # P1-12 / §3 anti-reflex: clean_failures is the single knob that reopens Q2 —
