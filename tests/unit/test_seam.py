@@ -94,6 +94,39 @@ def test_adapter_with_no_current_coordinate_falls_through() -> None:
     assert coord.call_site == _RUNG_BUSINESS + b"biz-key"
 
 
+# --- G-3: the B-1 blank-identity discipline in the core ladder -------------
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"key": ""},
+        {"key": "   "},
+        {"scope": "", "step": "s"},
+        {"scope": "  ", "step": "s"},
+        {"step": "", "scope": "run-1"},
+        {"step": "\t", "scope": "run-1"},
+        {"key": "x", "scope": ""},  # blank scope alongside key= is a bug, not "global"
+    ],
+)
+def test_ladder_refuses_blank_identity(kwargs: dict[str, str]) -> None:
+    # A blank/whitespace scope, step, or key would mint a run-pooling coordinate (the exact
+    # cross-run swallow B-1 fixed in the adapter) — refuse it loudly instead.
+    with pytest.raises(NoCoordinateError, match="blank"):
+        resolve_coordinate(**kwargs)  # type: ignore[arg-type]  # occurrence:int vs **str[]
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [{"key": "  order-1  "}, {"scope": " run-1\n", "step": " welcome "}],
+)
+def test_ladder_strips_padded_identity_to_the_trimmed_form(kwargs: dict[str, str]) -> None:
+    # Padded and trimmed identities resolve to the *same* coordinate — an unstripped run id
+    # must not re-key every resume.
+    trimmed = {k: v.strip() for k, v in kwargs.items()}
+    assert resolve_coordinate(**kwargs) == resolve_coordinate(  # type: ignore[arg-type]
+        **trimmed  # type: ignore[arg-type]
+    )
+
+
 # --- positional keys: stable across replay, unique per step ---------------
 def test_key_stable_across_reexecution() -> None:
     adapter = FakeAdapter(scope="run-1")

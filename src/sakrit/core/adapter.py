@@ -76,6 +76,28 @@ class ReservedAdapter(Protocol):
         ...
 
 
+def _require_nonblank(value: str | None, name: str) -> str | None:
+    """Strip an identity string and refuse a blank-after-strip one (the B-1 discipline).
+
+    A blank identity is almost always an accidentally-empty env var
+    (``scope=os.environ["RUN_ID"]`` with ``RUN_ID`` unset): it would pool every run/effect
+    into one coordinate — a *silent duplicate* — while an unstripped ``" run-1"`` vs
+    ``"run-1"`` mints distinct scopes and re-keys every resume. B-1 fixed this in the openai
+    adapter; the core ladder is where every non-adapter caller lands, so do it here too.
+    ``None`` (genuinely omitted) passes through untouched; a blank *string* refuses loudly.
+    """
+    if value is None:
+        return None
+    stripped = value.strip()
+    if not stripped:
+        raise NoCoordinateError(
+            f"{name}= was blank (whitespace only). A blank identity would pool every "
+            f"run/effect into one coordinate — a silent duplicate. Pass a real, stable "
+            f"{name}, or omit it to fall to the next ladder rung."
+        )
+    return stripped
+
+
 def resolve_coordinate(
     adapter: RuntimeAdapter | None = None,
     *,
@@ -100,6 +122,12 @@ def resolve_coordinate(
     Args-hashing appears on no rung: where identity can't be established, we refuse
     loudly rather than fabricate a wrong identity.
     """
+    # B-1 discipline for every caller: strip the identity strings and refuse a
+    # blank-after-strip one before it can mint a degenerate, run-pooling coordinate.
+    key = _require_nonblank(key, "key")
+    step = _require_nonblank(step, "step")
+    scope = _require_nonblank(scope, "scope")
+
     # Rung 1 — explicit business key. It names one action globally, so it outranks
     # even a runtime coordinate. A step alongside it is a second, conflicting identity.
     if key is not None:
