@@ -113,6 +113,16 @@ migratable axis rather than a silent break.
   **fingerprint**, surfacing as a `DivergentRetry` a human resolves — never a silent change of dedup
   behavior.
 
+## Trust model — a SED document can execute code
+
+`reconcile` / `refetch` / normalizer refs are resolved per language — the Python binding resolves
+`python:<module>:<attr>` by **importing the named module**, which is arbitrary code execution. That
+is the standard trust model for developer-authored config (pytest plugins, `setup.py`), and the
+refusal behavior around a bad ref is careful — but because SED is a *shareable, adopted* format, say
+it plainly: **a SED document is code-equivalent; load only declarations you trust.** A consumer that
+must load untrusted documents should resolve refs against an allow-list (the Python
+`load_sed(resolve_ref=…)` parameter exists for exactly this) rather than importing by name.
+
 ## What does not belong here
 
 Implementation detail — the ledger, the state machine, the claim protocol. SED is the *format* a tool

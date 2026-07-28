@@ -193,7 +193,12 @@ def load_sed(
     resolve_ref: Callable[[str], Callable[[str], Reconciliation]] = _resolve_python_ref,
 ) -> EffectDecl:
     """Parse + validate + bind a SED mapping to an :class:`EffectDecl` in one step. The caller
-    owns YAML (``yaml.safe_load(text)`` then ``load_sed(...)``)."""
+    owns YAML (``yaml.safe_load(text)`` then ``load_sed(...)``).
+
+    **Trust:** a SED document is code-equivalent. A ``reconcile.ref`` of ``python:<module>:<attr>``
+    is resolved by *importing the named module* — arbitrary code execution — so load only SED
+    declarations you trust, exactly as you would a plugin or a ``setup.py``. To sandbox untrusted
+    documents, pass a ``resolve_ref`` that resolves against an allow-list instead of importing."""
     from collections.abc import Mapping
 
     if not isinstance(doc, Mapping):

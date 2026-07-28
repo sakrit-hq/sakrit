@@ -27,6 +27,9 @@ instead of guessing — never a silent duplicate, never a silent drop.
 connection and imports no framework. It talks only to endpoints you configure, when you
 call the code that uses them.
 
+The ledger file stores your tools' **results and error text in plaintext** (never raw argument
+bytes) — treat `sakrit.db` with the same care as that data. See [`SECURITY.md`](SECURITY.md).
+
 ## Installation
 
 ```bash

@@ -47,6 +47,23 @@ Out of scope for now: the Sakrit Cloud service does not exist yet (it arrives in
 phases); this policy will be extended to cover it when it ships. Third-party frameworks Sakrit
 adapts (LangGraph, OpenAI Agents SDK, etc.) should be reported to their respective projects.
 
+## What the ledger stores (data at rest)
+
+The SQLite ledger is your durable record of what did and didn't happen. By design it stores **no raw
+argument bytes** — identity arguments are kept only as a non-reversible HMAC fingerprint. But two
+things it *does* store as **plaintext**:
+
+- **effect results** — whatever your guarded tool returns (JSON-encoded), so a replay can return it;
+- **error text** — for a declared clean failure, `"<ExceptionType>: <message>"`, and exception
+  messages routinely embed argument values.
+
+So treat the ledger file (`sakrit.db`, its `-wal`/`-shm` sidecars, and the `.lock` file next to it)
+with the same care as the data your tools return and receive: where it lives — laptop, shared volume,
+backup set — is a data-handling decision. Nothing leaves the machine (Sakrit has no telemetry and
+opens no network connection, verified by an import-time tripwire test), but the file itself is as
+sensitive as its contents. Encryption-at-rest for results is a legitimate later feature, not a
+preview guarantee.
+
 ## Supported versions
 
 Sakrit is pre-1.0. Security fixes land on the latest released version. Once we reach 1.0 we will
