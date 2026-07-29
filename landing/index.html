@@ -4,11 +4,11 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Sakrit — exactly-once effects for AI agents</title>
-<meta name="description" content="An AI agent's retry is a double charge. Sakrit makes side-effecting tool calls take effect exactly once — through crashes, retries, and resumes — and tells you honestly when exactly-once is impossible." />
+<meta name="description" content="Checkpointing rewinds your agent — not the world. Sakrit makes every consequential tool call take effect exactly once — or halts loudly and tells you." />
 
 <!-- Social -->
-<meta property="og:title" content="Sakrit — exactly-once effects for AI agents" />
-<meta property="og:description" content="An AI agent's retry is a double charge. Sakrit makes side-effecting tool calls take effect exactly once — and tells you honestly when it can't." />
+<meta property="og:title" content="Your agent resumed. The world didn't rewind. — Sakrit" />
+<meta property="og:description" content="Checkpointing re-runs steps that already happened. Sakrit makes every consequential tool call take effect exactly once — or halts loudly and tells you. Never silent." />
 <meta property="og:type" content="website" />
 
 <!-- Self-hosted fonts (m20): no third-party request — a page that says "no telemetry" shouldn't
@@ -101,7 +101,14 @@
     padding: 8px 16px; border-radius: 2px; transition: all .2s;
   }
   .nav-cta:hover { background: var(--gold); color: var(--ink) !important; }
-  @media (max-width: 680px) { .nav-links a:not(.nav-cta) { display: none; } }
+  /* Mobile nav: the one surviving action must match the page's PRIMARY funnel (self-serve
+     "Get started"), not the secondary sales path — so the CTAs swap below 680px. */
+  .nav-cta-m { display: none; }
+  @media (max-width: 680px) {
+    .nav-links a:not(.nav-cta) { display: none; }
+    .nav-cta-d { display: none; }
+    .nav-cta-m { display: inline-block; }
+  }
 
   /* ---------- hero ---------- */
   header { padding: 120px 0 70px; }
@@ -218,6 +225,206 @@
   .ladder b { color: var(--cream); }
   .ladder .g { color: var(--green); } .ladder .a { color: var(--gold); }
 
+  /* ---------- examples gallery ---------- */
+  .examples { padding: 84px 0; border-top: 1px solid var(--line); }
+  .ex-head { text-align: center; margin-bottom: 36px; }
+  .ex-head h2 {
+    font-family: var(--serif); font-weight: 400; font-size: clamp(26px, 3.6vw, 40px);
+    letter-spacing: -0.01em; margin-top: 12px;
+  }
+  .ex-head p { color: var(--muted); max-width: 56ch; margin: 16px auto 0; font-size: 16px; }
+
+  /* segmented control */
+  .ex-tabs {
+    display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-bottom: 30px;
+  }
+  .ex-tab {
+    position: relative; overflow: hidden;
+    font-family: var(--mono); font-size: 13px; letter-spacing: 0.01em; color: var(--muted);
+    background: var(--ink-2); border: 1px solid var(--line); padding: 10px 15px; border-radius: 2px;
+    cursor: pointer; transition: color .2s, border-color .2s, background .2s;
+    display: inline-flex; align-items: baseline; gap: 9px;
+  }
+  .ex-tab .k { font-size: 11px; color: var(--faint); transition: color .2s; }
+  .ex-tab:hover { border-color: var(--gold-dim); color: var(--cream); }
+  .ex-tab[aria-selected="true"] {
+    color: var(--ink); background: var(--gold); border-color: var(--gold); font-weight: 600;
+  }
+  .ex-tab[aria-selected="true"] .k { color: rgba(10,12,16,0.55); }
+  .ex-tab:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+
+  /* auto-advance progress bar — fills over the dwell on the active tab, then advances.
+     Reads as "this will move" so an auto-cycling gallery never looks frozen or broken. */
+  .ex-prog {
+    position: absolute; left: 0; bottom: 0; height: 2px; width: 0;
+    background: rgba(10,12,16,0.5); pointer-events: none;
+  }
+  .ex-tab.playing .ex-prog { animation: exFill var(--ex-dwell, 6s) linear forwards; }
+  .ex-tabs.paused .ex-tab.playing .ex-prog { animation-play-state: paused; }
+  @keyframes exFill { from { width: 0; } to { width: 100%; } }
+  @media (prefers-reduced-motion: reduce) { .ex-prog { display: none; } }
+
+  /* panels */
+  .ex-panel { display: none; }
+  .ex-panel.on { display: block; animation: fadeIn .4s forwards; }
+  .ex-grid { display: grid; grid-template-columns: 1.06fr 0.94fr; gap: 22px; align-items: stretch; }
+  @media (max-width: 860px) { .ex-grid { grid-template-columns: 1fr; } }
+  .ex-lede { text-align: center; max-width: 62ch; margin: 0 auto 26px; }
+  .ex-badge {
+    display: inline-block; margin-bottom: 14px;
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.22em; text-transform: uppercase;
+    color: var(--gold);
+  }
+  .ex-lede .ex-title {
+    font-family: var(--serif); font-weight: 500; font-size: clamp(21px, 2.6vw, 27px);
+    letter-spacing: -0.01em; margin-bottom: 8px;
+  }
+  .ex-lede .ex-desc { color: var(--muted); font-size: 15.5px; line-height: 1.55; }
+  .ex-lede .ex-desc em { color: var(--cream); font-style: italic; }
+
+  /* code card */
+  .code {
+    background: var(--ink-2); border: 1px solid var(--line); border-radius: 3px; overflow: hidden;
+    display: flex; flex-direction: column; box-shadow: 0 24px 60px -34px rgba(0,0,0,0.9);
+  }
+  .code .bar { display: flex; align-items: center; gap: 7px; padding: 11px 14px; border-bottom: 1px solid var(--line); }
+  .code .bar .d { width: 10px; height: 10px; border-radius: 50%; background: var(--faint); opacity: .45; }
+  .code .bar .fn { font-family: var(--mono); font-size: 11.5px; color: var(--faint); margin-left: 8px; }
+  .code pre {
+    margin: 0; padding: 18px; overflow-x: auto; font-family: var(--mono);
+    font-size: 12.7px; line-height: 1.78; color: var(--cream); flex: 1;
+  }
+  .code .cmt { color: var(--faint); font-style: italic; }
+  .code .kw  { color: var(--gold); }
+  .code .st  { color: var(--green); }
+  .code .fnn { color: #7cb0df; }
+  .code .idc { color: var(--red); }
+  .code .con { color: var(--muted); }
+  .run {
+    font-family: var(--mono); font-size: 12.5px; color: var(--muted);
+    padding: 13px 18px; border-top: 1px dashed var(--line);
+    display: flex; align-items: center; gap: 9px; background: rgba(10,12,16,0.4);
+  }
+  .run .p { color: var(--gold); }
+  .run .out { color: var(--faint); margin-left: auto; }
+
+  /* outcome card */
+  .outcome {
+    background: var(--ink-2); border: 1px solid var(--line); border-radius: 3px; padding: 22px;
+    display: flex; flex-direction: column; gap: 16px; box-shadow: 0 24px 60px -34px rgba(0,0,0,0.9);
+  }
+  .out-cap { font-family: var(--mono); font-size: 11.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--faint); }
+
+  /* money split */
+  .out-split { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .mini {
+    border: 1px solid var(--line); border-radius: 3px; padding: 15px; text-align: center;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .mini .who { font-family: var(--mono); font-size: 11px; letter-spacing: 0.06em; color: var(--faint); }
+  .mini .big { font-family: var(--mono); font-weight: 700; font-size: 26px; letter-spacing: -0.01em; }
+  .mini .lil { font-family: var(--mono); font-size: 11.5px; }
+  .mini.bad  { border-color: rgba(224,87,79,0.35); }
+  .mini.bad .big, .mini.bad .lil { color: var(--red); }
+  .mini.good { border-color: rgba(86,185,138,0.35); }
+  .mini.good .big, .mini.good .lil { color: var(--green); }
+
+  /* worker chips */
+  .workers { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; }
+  @media (max-width: 420px) { .workers { grid-template-columns: repeat(3, 1fr); } }
+  .chip {
+    border: 1px solid var(--line); border-radius: 3px; padding: 12px 4px; text-align: center;
+    font-family: var(--mono); font-size: 10.5px; color: var(--faint);
+    display: flex; flex-direction: column; align-items: center; gap: 7px;
+  }
+  .chip .st { font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase; }
+  .chip .bar { width: 100%; height: 3px; border-radius: 2px; background: var(--faint); opacity: .4; }
+  .chip.fire { border-color: rgba(215,162,75,0.5); color: var(--gold); }
+  .chip.fire .st { color: var(--gold); }
+  .chip.fire .bar { background: var(--gold); opacity: 1; box-shadow: 0 0 10px var(--gold); }
+  .chip.rep .st { color: var(--green); }
+  .chip.rep .bar { background: var(--green); opacity: .7; }
+
+  /* ledger line (ambiguity) */
+  .ledger-line {
+    font-family: var(--mono); font-size: 12.5px; border: 1px solid var(--line);
+    border-left: 3px solid var(--gold); border-radius: 3px; padding: 14px 16px;
+    color: var(--muted); line-height: 1.7;
+  }
+  .ledger-line .st-amb { color: var(--gold); font-weight: 700; letter-spacing: 0.06em; }
+  .ledger-line .k { color: var(--cream); }
+  .honest {
+    font-family: var(--mono); font-size: 12px; color: var(--muted); line-height: 1.7;
+    display: flex; gap: 10px;
+  }
+  .honest .never { color: var(--green); }
+
+  /* terminal output */
+  .term {
+    font-family: var(--mono); font-size: 12.5px; line-height: 1.85; color: var(--cream);
+    background: var(--ink); border: 1px solid var(--line); border-radius: 3px; padding: 16px 18px;
+  }
+  .term .ok { color: var(--green); }
+  .term .mut { color: var(--faint); }
+
+  .out-note { font-family: var(--mono); font-size: 11.5px; color: var(--faint); line-height: 1.7; margin-top: auto; }
+  .out-note b { color: var(--cream); font-weight: 500; }
+
+  /* hero install chip */
+  .install-row { margin-top: 22px; opacity: 0; animation: rise .9s .8s forwards; }
+  .install {
+    display: inline-flex; align-items: center; gap: 12px; font-family: var(--mono); font-size: 15px;
+    color: var(--cream); background: var(--ink-2); border: 1px solid var(--line);
+    border-left: 3px solid var(--gold); border-radius: 3px; padding: 12px 18px;
+  }
+  .install .pmt { color: var(--gold); }
+  .install-hint { font-family: var(--mono); font-size: 12px; color: var(--faint); margin-left: 12px; }
+
+  /* ---------- get started ---------- */
+  .start { padding: 84px 0; border-top: 1px solid var(--line); }
+  .start-grid { display: grid; grid-template-columns: 0.86fr 1.14fr; gap: 40px; align-items: center; }
+  @media (max-width: 820px) { .start-grid { grid-template-columns: 1fr; } }
+  .start h2 {
+    font-family: var(--serif); font-weight: 400; font-size: clamp(26px, 3.6vw, 40px);
+    letter-spacing: -0.01em; margin: 12px 0 16px;
+  }
+  .start p { color: var(--muted); font-size: 16px; margin-bottom: 22px; line-height: 1.6; }
+  .start p b { color: var(--cream); font-weight: 500; }
+  .frameworks { font-family: var(--mono); font-size: 12.5px; color: var(--faint); margin-top: 20px; line-height: 1.7; }
+  .frameworks b { color: var(--muted); font-weight: 500; }
+
+  /* ---------- objections ---------- */
+  .objections { padding: 82px 0; border-top: 1px solid var(--line); }
+  .obj-grid {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--line);
+    border: 1px solid var(--line); border-radius: 3px; overflow: hidden; margin-top: 30px;
+  }
+  @media (max-width: 760px) { .obj-grid { grid-template-columns: 1fr; } }
+  .obj { background: var(--ink); padding: 32px 28px; transition: background .3s; }
+  .obj:hover { background: var(--ink-2); }
+  .obj .q {
+    font-family: var(--serif); font-weight: 500; font-size: 19px; color: var(--cream);
+    letter-spacing: -0.01em; margin-bottom: 12px;
+  }
+  .obj .q .x { color: var(--red); font-family: var(--mono); font-size: 15px; margin-right: 7px; }
+  .obj .a { color: var(--muted); font-size: 14.5px; line-height: 1.62; }
+  .obj .a b { color: var(--cream); font-weight: 500; }
+
+  /* ---------- evidence strip ---------- */
+  .evidence { border-top: 1px solid var(--line); background: var(--ink-2); }
+  .ev-inner {
+    display: flex; flex-wrap: wrap; justify-content: center; gap: 12px 28px; padding: 24px 0;
+    font-family: var(--mono); font-size: 12.5px; color: var(--muted);
+  }
+  .ev-inner .it { display: inline-flex; align-items: center; gap: 9px; }
+  .ev-inner .it::before { content: "✓"; color: var(--green); font-weight: 700; }
+
+  /* examples auto-play caption */
+  .ex-cap {
+    text-align: center; font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em;
+    color: var(--faint); margin: -14px 0 26px;
+  }
+
   /* ---------- waitlist ---------- */
   .waitlist { padding: 96px 0 100px; border-top: 1px solid var(--line); }
   .wl-card {
@@ -285,11 +492,12 @@
     </div>
     <div class="nav-links">
       <a href="#proof">The proof</a>
-      <a href="#how">How</a>
-      <!-- TODO(founder): point at the live docs site + repo before launch -->
-      <a href="https://github.com/sakrit-hq/sakrit">Docs</a>
+      <a href="#start">Get started</a>
+      <a href="#how">What you get</a>
+      <a href="#examples">Examples</a>
       <a href="https://github.com/sakrit-hq/sakrit">GitHub ↗</a>
-      <a href="#waitlist" class="nav-cta">Join waitlist</a>
+      <a href="#start" class="nav-cta nav-cta-m">Get started</a>
+      <a href="#waitlist" class="nav-cta nav-cta-d">Design partners</a>
     </div>
   </div>
 </nav>
@@ -298,18 +506,21 @@
   <div class="wrap">
     <div class="hero-tag tag">Exactly-once effects for AI agents</div>
     <h1>
-      <span class="l l1">An agent's retry is a <span class="strike">double charge</span>.</span>
-      <span class="l l2">Make it happen <span class="em">exactly once</span>.<span class="caret"></span></span>
+      <span class="l l1">Your agent resumed.</span>
+      <span class="l l2">The world <span class="em">didn't rewind</span>.<span class="caret"></span></span>
     </h1>
     <p class="lede">
-      Sakrit sits between your agent and the tools it calls, so every action with real-world
-      consequences — a charge, an email, a write — takes effect <b>exactly once</b> through crashes,
-      retries, and resumes. And where exactly-once is genuinely impossible, it <b>tells you honestly</b>
-      instead of guessing.
+      Checkpointing re-runs steps that already happened — the charge, the email, the write. Sakrit
+      sits between your agent and its tools so every consequential action takes effect
+      <b>exactly once</b> — or halts loudly and <b>tells you</b>. Never silent.
     </p>
     <div class="cta-row">
-      <a href="#waitlist" class="btn btn-primary">Join the waitlist →</a>
-      <a href="https://github.com/sakrit-hq/sakrit" class="btn btn-ghost">Read the docs</a>
+      <a href="#start" class="btn btn-primary">Get started →</a>
+      <a href="https://github.com/sakrit-hq/sakrit" class="btn btn-ghost">GitHub ↗</a>
+    </div>
+    <div class="install-row">
+      <span class="install"><span class="pmt">$</span> pip install sakrit</span>
+      <span class="install-hint hint">Apache-2.0 · no account · works offline</span>
     </div>
   </div>
 </header>
@@ -355,6 +566,38 @@
   </div>
 </section>
 
+<section class="start" id="start">
+  <div class="wrap start-grid">
+    <div>
+      <div class="tag">The library is open — start now</div>
+      <h2>Guard a tool in one call.</h2>
+      <p>Wrap the tool that touches the world and name each action's <b>intent</b> with a key from
+        your domain. Crash, resume, or retry — it fires once, or halts and tells you.</p>
+      <div class="install-row" style="animation:none;opacity:1;margin-top:0">
+        <span class="install"><span class="pmt">$</span> pip install sakrit</span>
+      </div>
+      <div class="frameworks">Works with <b>LangGraph</b>, <b>OpenAI Agents SDK</b>, or
+        <b>plain Python</b> — framework adapters are optional extras.</div>
+    </div>
+    <div class="code">
+      <div class="bar"><span class="d"></span><span class="d"></span><span class="d"></span><span class="fn">quickstarts/plain_quickstart.py</span></div>
+<pre><span class="kw">from</span> sakrit <span class="kw">import</span> Sakrit, SqliteLedger, EffectDecl, ArgClass
+
+sk = <span class="fnn">Sakrit</span>(<span class="fnn">SqliteLedger</span>(<span class="st">"sakrit.db"</span>), secret=SECRET)
+
+SEND = <span class="fnn">EffectDecl</span>(<span class="st">"email.send"</span>,
+    {<span class="st">"to"</span>: ArgClass.<span class="idc">IDENTITY</span>, <span class="st">"subject"</span>: ArgClass.<span class="idc">IDENTITY</span>,
+     <span class="st">"body"</span>: ArgClass.<span class="con">CONTENT</span>})
+
+<span class="cmt"># the key names the intent — a crash or retry replays, never re-sends</span>
+sk.<span class="fnn">guard</span>(SEND, send_email, key=<span class="st">"welcome-ops"</span>,
+    kwargs={<span class="st">"to"</span>: <span class="st">"ops@example.com"</span>,
+            <span class="st">"subject"</span>: <span class="st">"Welcome"</span>, <span class="st">"body"</span>: <span class="st">"Hello!"</span>})</pre>
+      <div class="run"><span class="p">$</span> python examples/quickstarts/plain_quickstart.py<span class="out">fires once</span></div>
+    </div>
+  </div>
+</section>
+
 <section class="pillars" id="how">
   <div class="wrap">
     <div class="proof-head" style="text-align:left; margin-bottom: 34px;">
@@ -362,40 +605,272 @@
     </div>
     <div class="p-grid">
       <div class="pillar">
-        <div class="n">01 / IDENTITY</div>
-        <h3>Positional, not argument-based</h3>
-        <p>Agents reword arguments on every retry. Sakrit keys an effect by <em>which step of which
-          run</em> it is — so a reworded email is the same email, and a forgotten field can never mint
-          a duplicate.</p>
+        <div class="n">01 / HONESTY</div>
+        <h3>Exactly once — or it tells you</h3>
+        <p>Strict exactly-once has one impossible spot: the window between an effect firing and its
+          record landing. Sakrit is built around admitting it — it halts <em>loudly</em> and
+          surfaces the ambiguity for a human. Never a silent duplicate, never a silent drop. Proven
+          by killing our own process at every dangerous boundary.</p>
       </div>
       <div class="pillar">
-        <div class="n">02 / HONESTY</div>
-        <h3>Never silent, ever</h3>
-        <p>Where exactly-once is impossible, Sakrit halts <em>loudly</em> and surfaces the ambiguity
-          for a human — never a silent duplicate, never a silent drop. Proven by killing our own
-          process at every dangerous boundary.</p>
+        <div class="n">02 / IDENTITY</div>
+        <h3>A reworded retry is the same intent</h3>
+        <p>Agents reword arguments on every retry — so a payload hash mints duplicates. Sakrit keys
+          an effect by <em>which step of which run</em> it is, so a reworded email is the same email,
+          and a forgotten field can never become a second charge.</p>
       </div>
       <div class="pillar">
         <div class="n">03 / TRUST</div>
-        <h3>No telemetry. A dependency.</h3>
-        <p><code>import sakrit</code> opens no network connection and pulls in no framework. Apache-2.0,
-          works offline, no account. The guarantee is the whole product.</p>
+        <h3>A library, not a platform</h3>
+        <p><code>import sakrit</code> opens no network connection and pulls in no framework.
+          Apache-2.0 forever, works offline, no account — you run it, you own the ledger. The
+          guarantee is the whole product.</p>
       </div>
     </div>
     <p class="ladder">
-      Declared per tool, never guessed: <b>L3</b> true exactly-once →
-      <span class="g">L2+R</span> (recommended for money) → <span class="g">L2 · L1</span>
-      effectively-exactly-once → <span class="a">L0</span> at-most-once with a loud, surfaced flag.
+      You <b>declare</b> how strong each tool's guarantee can be — from
+      <span class="g">true exactly-once</span> where the provider cooperates, down to a loud,
+      <span class="a">surfaced flag</span> where it can't. Never guessed.
     </p>
+  </div>
+</section>
+
+<section class="objections">
+  <div class="wrap">
+    <div class="proof-head" style="text-align:left; margin-bottom: 6px;">
+      <div class="tag">Why isn't what we already do enough?</div>
+      <h2 style="font-family:var(--serif);font-weight:400;font-size:clamp(24px,3.4vw,36px);letter-spacing:-0.01em;margin-top:12px">The obvious fixes each leave a gap.</h2>
+    </div>
+    <div class="obj-grid">
+      <div class="obj">
+        <div class="q"><span class="x">✕</span>Our framework checkpoints and resumes.</div>
+        <div class="a">Checkpointing rewinds the <b>agent</b>, not the <b>world</b>. On resume it
+          re-runs steps that already took effect — the charge already cleared, the email already
+          sent. Sakrit is the half checkpointing doesn't cover.</div>
+      </div>
+      <div class="obj">
+        <div class="q"><span class="x">✕</span>We send idempotency keys to Stripe.</div>
+        <div class="a">Keys work while they're stable — but an agent rarely words a retry the same
+          way twice, so a hash-derived key changes and the charge fires again. And only some
+          providers accept keys at all. Sakrit derives identity from <b>position</b>, for every
+          tool.</div>
+      </div>
+      <div class="obj">
+        <div class="q"><span class="x">✕</span>We wrap tool calls in retry logic.</div>
+        <div class="a">A retry after a timeout is the trap: the effect may already have landed. Blind
+          retries double-charge; giving up drops the action. Sakrit records before it acts, so it
+          <b>knows</b> — or halts and asks.</div>
+      </div>
+    </div>
+    <p class="ladder" style="margin-top:26px">
+      And every effect, every replay, every halt lands on one <b>auditable ledger</b> —
+      <span class="mono" style="color:var(--gold)">sakrit audit</span> shows exactly what fired,
+      what replayed, and what's waiting on a human.
+    </p>
+  </div>
+</section>
+
+<section class="examples" id="examples">
+  <div class="wrap">
+    <div class="ex-head">
+      <div class="tag">Run it yourself — every script executes verbatim in CI</div>
+      <h2>Anything with consequences.</h2>
+      <p>Payments are the vivid case, but Sakrit guards <em>any</em> action the world remembers — a
+        charge, a database write, a webhook, an email — the same way. The code below is real and the
+        output is what actually prints.</p>
+    </div>
+
+    <div class="ex-tabs" role="tablist" aria-label="Sakrit examples">
+      <button class="ex-tab" role="tab" id="tab-money" aria-controls="panel-money" aria-selected="true"><span class="k">01</span> The double charge<span class="ex-prog"></span></button>
+      <button class="ex-tab" role="tab" id="tab-race" aria-controls="panel-race" aria-selected="false" tabindex="-1"><span class="k">02</span> Six workers, one write<span class="ex-prog"></span></button>
+      <button class="ex-tab" role="tab" id="tab-halt" aria-controls="panel-halt" aria-selected="false" tabindex="-1"><span class="k">03</span> The honest halt<span class="ex-prog"></span></button>
+      <button class="ex-tab" role="tab" id="tab-mail" aria-controls="panel-mail" aria-selected="false" tabindex="-1"><span class="k">04</span> Reworded, still once<span class="ex-prog"></span></button>
+    </div>
+    <div class="ex-cap">Plays automatically — hover, focus, or tap to pause</div>
+
+    <!-- 01 · MONEY -->
+    <div class="ex-panel on" id="panel-money" role="tabpanel" aria-labelledby="tab-money" tabindex="0">
+      <div class="ex-lede">
+        <div class="ex-badge">Payments</div>
+        <div class="ex-title">A retry after a crash bills the card twice.</div>
+        <div class="ex-desc">The <em>key</em> names the intent — one per order, drawn from your domain,
+          never a payload hash. Retry the same order and it dedups; a genuinely new order gets a new key
+          and charges.</div>
+      </div>
+      <div class="ex-grid">
+        <div class="code">
+          <div class="bar"><span class="d"></span><span class="d"></span><span class="d"></span><span class="fn">money_agent/demo.py</span></div>
+<pre><span class="kw">from</span> sakrit <span class="kw">import</span> Sakrit, SqliteLedger, EffectDecl, ArgClass
+
+CHARGE = <span class="fnn">EffectDecl</span>(
+    <span class="st">"payment.charge"</span>,
+    {<span class="st">"customer"</span>: ArgClass.<span class="idc">IDENTITY</span>,
+     <span class="st">"amount_cents"</span>: ArgClass.<span class="idc">IDENTITY</span>},
+)
+
+<span class="cmt"># key = which intent; identity args = proof it's that intent</span>
+sk.<span class="fnn">guard</span>(CHARGE, charge_card,
+    kwargs={<span class="st">"customer"</span>: <span class="st">"cus_8815"</span>, <span class="st">"amount_cents"</span>: <span class="st">4999</span>},
+    key=<span class="st">f"order-{order_id}-charge"</span>)</pre>
+          <div class="run"><span class="p">$</span> python examples/money_agent/demo.py<span class="out">crash mid-charge → resume</span></div>
+        </div>
+        <div class="outcome">
+          <div class="out-cap">Total billed after one crash</div>
+          <div class="out-split">
+            <div class="mini bad">
+              <div class="who">✕ NAIVE AGENT</div>
+              <div class="big">$99.98</div>
+              <div class="lil">2 charges · $49.99 ×2</div>
+            </div>
+            <div class="mini good">
+              <div class="who">✓ WITH SAKRIT</div>
+              <div class="big">$49.99</div>
+              <div class="lil">1 charge · retry replayed</div>
+            </div>
+          </div>
+          <div class="out-note">The retry doesn't re-fire — it <b>replays the recorded receipt</b>,
+            logged at INFO so you always see it.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 02 · MULTI-WORKER -->
+    <div class="ex-panel" id="panel-race" role="tabpanel" aria-labelledby="tab-race" tabindex="0">
+      <div class="ex-lede">
+        <div class="ex-badge">Inventory</div>
+        <div class="ex-title">Six workers race for the last unit. Stock drops once.</div>
+        <div class="ex-desc">Not money — a plain <em>database write</em>. Each worker opens its own
+          connection to one shared ledger; one acquires a <em>lease</em> and writes, the rest wait
+          and replay the winner's result. A stalled "zombie" that returns late is <em>fenced</em>,
+          so stock decrements once (1 → 0) and can never go negative.</div>
+      </div>
+      <div class="ex-grid">
+        <div class="code">
+          <div class="bar"><span class="d"></span><span class="d"></span><span class="d"></span><span class="fn">multi_worker/demo.py</span></div>
+<pre><span class="cmt"># one shared file ledger, coordinated across workers</span>
+ledger = <span class="fnn">SqliteLedger</span>(<span class="st">"sakrit.db"</span>, multi_worker=<span class="kw">True</span>)
+
+<span class="kw">def</span> <span class="fnn">worker</span>():
+    sk = <span class="fnn">Sakrit</span>(own_conn(ledger), secret=SECRET)
+    <span class="kw">return</span> sk.<span class="fnn">guard</span>(RESERVE, reserve_unit,
+        kwargs={...}, key=<span class="st">"order-4471-reserve"</span>)
+
+<span class="cmt"># race all six at once → leases + fencing pick the one writer</span>
+run_in_parallel([worker] * <span class="st">6</span>)</pre>
+          <div class="run"><span class="p">$</span> python examples/multi_worker/demo.py<span class="out">6 threads, 1 unit</span></div>
+        </div>
+        <div class="outcome">
+          <div class="out-cap">6 workers raced → 1 reservation · stock 1 → 0</div>
+          <div class="workers">
+            <div class="chip fire"><span class="bar"></span>W1<span class="st">wrote</span></div>
+            <div class="chip rep"><span class="bar"></span>W2<span class="st">replay</span></div>
+            <div class="chip rep"><span class="bar"></span>W3<span class="st">replay</span></div>
+            <div class="chip rep"><span class="bar"></span>W4<span class="st">replay</span></div>
+            <div class="chip rep"><span class="bar"></span>W5<span class="st">replay</span></div>
+            <div class="chip rep"><span class="bar"></span>W6<span class="st">replay</span></div>
+          </div>
+          <div class="out-note">All six return the <b>same reservation</b>
+            <span class="mono">{'reservation_id': 'rsv_1'}</span>. Proven to survive a real
+            <span class="mono">os._exit</span> mid-flight, with a peer taking over.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 03 · HONEST HALT -->
+    <div class="ex-panel" id="panel-halt" role="tabpanel" aria-labelledby="tab-halt" tabindex="0">
+      <div class="ex-lede">
+        <div class="ex-badge">Webhooks</div>
+        <div class="ex-title">The crash lands in the one window it can't reason about.</div>
+        <div class="ex-desc">A process dies <em>between</em> the webhook firing and its record. Sakrit
+          can't know whether it happened — so it refuses to guess. Every retry keeps halting
+          until a human supplies the missing evidence.</div>
+      </div>
+      <div class="ex-grid">
+        <div class="code">
+          <div class="bar"><span class="d"></span><span class="d"></span><span class="d"></span><span class="fn">ambiguous/demo.py</span></div>
+<pre><span class="kw">try</span>:
+    sk.<span class="fnn">guard</span>(CHARGE, charge_card, kwargs={...}, key=key)
+<span class="kw">except</span> <span class="fnn">AmbiguousOutcome</span>:
+    <span class="cmt"># raised on every retry — never a silent duplicate or drop</span>
+    ...
+
+<span class="cmt"># out of band, once you've checked the provider yourself:</span>
+ledger.<span class="fnn">accept_late_evidence</span>(key, result={<span class="st">"id"</span>: <span class="st">"pi_9f2"</span>})
+<span class="cmt"># ...or failed=True if it provably never ran → retryable</span></pre>
+          <div class="run"><span class="p">$</span> sakrit audit sakrit.db --state AMBIGUOUS<span class="out">what halted</span></div>
+        </div>
+        <div class="outcome">
+          <div class="out-cap">Surfaced for a human · not guessed</div>
+          <div class="ledger-line">
+            <span class="k">order-4471-charge</span> · payment.charge<br />
+            state <span class="st-amb">⚠ AMBIGUOUS</span> — effect may or may not have fired<br />
+            <span style="color:var(--faint)">→ blocked until late evidence is recorded</span>
+          </div>
+          <div class="honest"><span class="never">✓</span>
+            <span>Every halt lands in a <b style="color:var(--cream);font-weight:500">review
+            queue</b> for a human. The one thing a machine can't know in the gap is the one thing
+            a person closes.</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 04 · REWORDED EMAIL -->
+    <div class="ex-panel" id="panel-mail" role="tabpanel" aria-labelledby="tab-mail" tabindex="0">
+      <div class="ex-lede">
+        <div class="ex-badge">Email</div>
+        <div class="ex-title">No framework, no money — the same exactly-once.</div>
+        <div class="ex-desc">Declare which args are <em>identity</em> and which are <em>content</em>. A model
+          reweighs the body on every retry — but a reworded body is the <em>same</em> email, so the
+          retry replays instead of sending twice.</div>
+      </div>
+      <div class="ex-grid">
+        <div class="code">
+          <div class="bar"><span class="d"></span><span class="d"></span><span class="d"></span><span class="fn">quickstarts/plain_quickstart.py</span></div>
+<pre>SEND = <span class="fnn">EffectDecl</span>(<span class="st">"email.send"</span>, {
+    <span class="st">"to"</span>:      ArgClass.<span class="idc">IDENTITY</span>,   <span class="cmt"># diff recipient = diff email</span>
+    <span class="st">"subject"</span>: ArgClass.<span class="idc">IDENTITY</span>,
+    <span class="st">"body"</span>:    ArgClass.<span class="con">CONTENT</span>,    <span class="cmt"># reworded body = SAME email</span>
+})
+
+sk.<span class="fnn">guard</span>(SEND, send_email, key=<span class="st">"welcome-ops"</span>,
+    kwargs={<span class="st">"to"</span>: <span class="st">"ops@example.com"</span>,
+            <span class="st">"subject"</span>: <span class="st">"Welcome"</span>, <span class="st">"body"</span>: <span class="st">"Hello!"</span>})</pre>
+          <div class="run"><span class="p">$</span> python examples/quickstarts/plain_quickstart.py<span class="out">send · then retry</span></div>
+        </div>
+        <div class="outcome">
+          <div class="out-cap">Program output</div>
+          <div class="term">
+            <span class="ok">fired exactly once:</span> ['ops@example.com']<br />
+            <span class="mut">the retry replayed the recorded result:</span><br />
+            &nbsp;&nbsp;'delivered to ops@example.com'
+          </div>
+          <div class="out-note">Two calls, <b>one send</b>. Dependency-free — <span class="mono">import
+            sakrit</span> pulls in no framework and opens no socket.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="evidence">
+  <div class="wrap ev-inner">
+    <span class="it">Crash-tested at every dangerous boundary</span>
+    <span class="it">Every snippet runs verbatim in CI</span>
+    <span class="it">Survives a real <span class="mono" style="color:var(--cream);margin-left:5px">os._exit</span> mid-flight</span>
+    <span class="it">Zero network at import</span>
   </div>
 </section>
 
 <section class="waitlist" id="waitlist">
   <div class="wrap">
     <div class="wl-card">
-      <h2>Shape the review queue before it exists.</h2>
-      <p>We're onboarding a small group of design partners running agents that touch money. Early access
-        to the library, white-glove integration, and a direct line to the founder.</p>
+      <h2>The library is open. The partner program is small.</h2>
+      <p><b style="color:var(--cream);font-weight:500">Sakrit is Apache-2.0 and yours today</b> —
+        <span class="mono" style="color:var(--gold)">pip install sakrit</span>. We're also onboarding
+        a few design partners running agents that take real-world actions. Partners get white-glove
+        integration, a direct line to the founder, and first access to the hosted
+        <b style="color:var(--cream);font-weight:500">review queue</b>. The library stays free
+        forever; the cloud is how we plan to make money.</p>
 
       <!--
         TODO(founder), C-8: wire this to a real endpoint before launch.
@@ -408,7 +883,7 @@
         <button type="submit" class="btn btn-primary">Request access</button>
       </form>
       <div class="wl-ok" id="wl-ok">✓ You're on the list. We'll be in touch.</div>
-      <div class="wl-note">No spam. No telemetry. One email when there's something real to show.</div>
+      <div class="wl-note">No spam. No telemetry. One email when the review queue is ready.</div>
     </div>
   </div>
 </section>
@@ -422,7 +897,7 @@
     </div>
     <div class="foot-links">
       <a href="https://github.com/sakrit-hq/sakrit">GitHub</a>
-      <a href="https://github.com/sakrit-hq/sakrit">Docs</a>
+      <a href="https://github.com/sakrit-hq/sakrit#readme">README</a>
       <a href="https://github.com/sakrit-hq/sakrit/blob/main/LICENSE">Apache-2.0</a>
     </div>
   </div>
@@ -440,6 +915,89 @@
   } else if (receipts) {
     receipts.classList.add("in");
   }
+
+  // Examples gallery: accessible tabs that AUTO-ADVANCE through the four examples, so no click is
+  // needed to see them all. Guardrails keep an auto-cycling gallery from fighting the reader:
+  //   • a progress bar shows the dwell filling, so it reads as "moving", never "frozen";
+  //   • it pauses on hover / keyboard focus (don't yank a snippet away mid-read);
+  //   • it only runs while the section is on-screen (IntersectionObserver);
+  //   • an explicit click / arrow-key hands control to the user and STOPS auto-advance;
+  //   • prefers-reduced-motion disables auto-advance entirely (manual tabs, as before).
+  // No-JS safe: the first panel is visible by default and every panel is plain markup.
+  (function () {
+    var section = document.getElementById('examples');
+    var tablist = document.querySelector('.ex-tabs');
+    var tabs = [].slice.call(document.querySelectorAll('.ex-tab'));
+    if (!section || !tablist || !tabs.length) return;
+
+    var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    var current = 0;
+    var userTook = false;   // an explicit interaction stops auto-advance for good
+    var onScreen = false;
+
+    function show(i, opts) {
+      current = i;
+      tabs.forEach(function (t, j) {
+        var on = j === i;
+        t.setAttribute('aria-selected', on ? 'true' : 'false');
+        t.tabIndex = on ? 0 : -1;
+        t.classList.remove('playing');  // reset any in-flight progress bar
+        var panel = document.getElementById(t.getAttribute('aria-controls'));
+        if (panel) panel.classList.toggle('on', on);
+      });
+      // Arm the active tab's progress bar unless the user has taken control (or reduced motion).
+      if (!userTook && !reduce) {
+        var active = tabs[i];
+        void active.offsetWidth;        // force reflow so the fill animation restarts cleanly
+        active.classList.add('playing');
+      }
+      if (opts && opts.focus) tabs[i].focus();
+    }
+
+    // The loop is driven by the progress bar finishing: when the active fill ends, advance. Pausing
+    // (hover/off-screen) sets animation-play-state:paused via .paused, so animationend simply waits.
+    tablist.addEventListener('animationend', function (e) {
+      if (userTook || reduce || !e.target.classList.contains('ex-prog')) return;
+      show((current + 1) % tabs.length);
+    });
+
+    function pause() { tablist.classList.add('paused'); }
+    function resume() { if (onScreen && !userTook) tablist.classList.remove('paused'); }
+
+    // Pause while the reader is engaged anywhere in the gallery — hovering the code panel counts,
+    // not just the tab strip, so a snippet is never yanked away mid-read.
+    section.addEventListener('mouseenter', pause);
+    section.addEventListener('mouseleave', resume);
+    section.addEventListener('focusin', pause);
+    section.addEventListener('focusout', resume);
+
+    function take(i, focus) { userTook = true; tablist.classList.remove('paused'); show(i, { focus: focus }); }
+
+    tabs.forEach(function (tab, i) {
+      tab.addEventListener('click', function () { take(i, false); });
+      tab.addEventListener('keydown', function (e) {
+        var next = e.key === 'ArrowRight' ? i + 1 : e.key === 'ArrowLeft' ? i - 1
+                 : e.key === 'Home' ? 0 : e.key === 'End' ? tabs.length - 1 : -1;
+        if (next === -1) return;
+        e.preventDefault();
+        take((next + tabs.length) % tabs.length, true);
+      });
+    });
+
+    // Only auto-advance while the gallery is actually on-screen.
+    if (!reduce && 'IntersectionObserver' in window) {
+      new IntersectionObserver(function (entries) {
+        entries.forEach(function (en) {
+          onScreen = en.isIntersecting;
+          if (onScreen) resume(); else pause();
+        });
+      }, { threshold: 0.35 }).observe(tablist);
+    } else {
+      onScreen = true;
+    }
+
+    show(0);  // arm the first panel's progress bar (or, under reduced motion, just select it)
+  })();
 
   // Waitlist: client-side confirmation placeholder (see the TODO in the markup).
   // The founder replaces this by wiring the form `action` to a real endpoint and deleting this block.

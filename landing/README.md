@@ -37,3 +37,23 @@ It's a single static file — deploy `landing/` anywhere:
 - Respects `prefers-reduced-motion`.
 - The receipt figures match the real demo (`examples/money_agent/`): order #4471, $49.99, naive → 2
   charges, guarded → 1.
+- The **Examples gallery** (`#examples`) is a tabbed, auto-advancing showcase of four real,
+  CI-executed scripts — the money demo, the six-worker race (`examples/multi_worker/`), the
+  honest-halt / ambiguity flow (`examples/ambiguous/`), and the plain-Python email quickstart
+  (`examples/quickstarts/plain_quickstart.py`). Tabs are accessible (real `role="tablist"`, arrow-key
+  roving focus), auto-advance pauses on hover/focus/off-screen, and it's no-JS safe (first panel
+  shows by default). Keep the code snippets and printed outputs in sync with those scripts.
+
+## Positioning (see `docs/ui/landing-content-review.md`)
+
+The page was restructured off that content review. The message hierarchy is now: **the gap**
+(hero — "Your agent resumed. The world didn't rewind.") → **the proof** (receipts) → **try it**
+(`#start` — `pip install sakrit` + a 5-line snippet) → **what you get** (pillars, honesty first) →
+**objections** (checkpointing / idempotency keys / retries) → **breadth** (examples) → **evidence
+strip** → **design partners** (waitlist). Two deliberate rules to preserve if you edit copy:
+
+- **The funnel is split and honest.** The library is open (`pip install sakrit`, primary CTA "Get
+  started"); the waitlist gates only the *design-partner program + hosted review queue*, never "the
+  library." Don't reintroduce "early access to the library" — it contradicts Apache-2.0.
+- **Honesty leads.** The headline promise is "exactly once — **or it tells you**," not a flat
+  "exactly once." Money is framed as one use case, not the product.
