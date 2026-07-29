@@ -11,14 +11,15 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 import textwrap
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-PY = sys.executable
-SAKRIT_CLI = ROOT / ".venv" / "bin" / "sakrit"
+PY = shlex.quote(sys.executable)
+SAKRIT_CLI = shlex.quote(str(ROOT / ".venv" / "bin" / "sakrit"))
 
 DEMO_DIR = Path("/tmp/sakrit_demo")
 DEMO_DB = DEMO_DIR / "money.db"
