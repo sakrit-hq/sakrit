@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<!--
+  Source for the social share image (og:image / twitter:image). 1200×630.
+  Render to PNG with headless Chrome (see landing/README.md → "Regenerate the OG image"):
+    "…/Google Chrome" --headless=new --hide-scrollbars --window-size=1200,630 \
+      --virtual-time-budget=2500 --screenshot=og.png file://…/landing/og-card.html
+  Reuses the page's self-hosted fonts (./fonts.css) so the card matches the brand exactly.
+-->
+<link rel="stylesheet" href="./fonts.css" />
+<style>
+  :root {
+    --ink: #0a0c10; --ink-2: #10141b; --cream: #ece7db; --muted: #8b909c;
+    --faint: #565c68; --gold: #d7a24b; --red: #e0574f; --green: #56b98a;
+    --line: rgba(236,231,219,0.10);
+    --serif: "Fraunces", Georgia, serif; --sans: "IBM Plex Sans", system-ui, sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1200px; height: 630px; overflow: hidden; }
+  body {
+    background: var(--ink); color: var(--cream); font-family: var(--sans);
+    position: relative; -webkit-font-smoothing: antialiased;
+  }
+  /* ledger grid + top glow, echoing the page */
+  body::before {
+    content: ""; position: absolute; inset: 0;
+    background-image:
+      linear-gradient(rgba(236,231,219,0.05) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(236,231,219,0.05) 1px, transparent 1px);
+    background-size: 60px 60px;
+    mask-image: radial-gradient(ellipse 80% 70% at 50% 0%, #000 30%, transparent 82%);
+  }
+  body::after {
+    content: ""; position: absolute; top: -320px; left: 50%; transform: translateX(-50%);
+    width: 1200px; height: 640px;
+    background: radial-gradient(ellipse at center, rgba(215,162,75,0.13), transparent 60%);
+  }
+  .card { position: relative; z-index: 2; height: 100%; padding: 60px 64px; display: flex; flex-direction: column; }
+
+  .top { display: flex; align-items: baseline; justify-content: space-between; }
+  .brand { display: flex; align-items: baseline; gap: 14px; }
+  .logo { font-family: var(--serif); font-weight: 600; font-size: 34px; letter-spacing: -0.01em; }
+  .logo b { color: var(--gold); font-weight: 900; }
+  .sub { font-family: var(--mono); font-size: 14px; color: var(--faint); letter-spacing: 0.04em; }
+  .eyebrow { font-family: var(--mono); font-size: 13px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--gold); }
+
+  .main { flex: 1; display: flex; align-items: center; gap: 56px; margin-top: 8px; }
+  .left { flex: 1.15; }
+  h1 { font-family: var(--serif); font-weight: 400; font-size: 62px; line-height: 1.05; letter-spacing: -0.02em; }
+  h1 .em { font-style: italic; color: var(--gold); font-weight: 500; }
+  .promise { font-family: var(--sans); font-size: 22px; color: var(--muted); margin-top: 26px; line-height: 1.45; max-width: 22ch; }
+  .promise b { color: var(--cream); font-weight: 500; }
+
+  .right { flex: 0.85; display: flex; flex-direction: column; gap: 16px; }
+  .rc { background: var(--ink-2); border: 1px solid var(--line); border-radius: 4px; padding: 18px 20px; position: relative; box-shadow: 0 20px 50px -30px rgba(0,0,0,0.9); }
+  .rc::before { content: ""; position: absolute; top: -1px; left: 0; right: 0; height: 5px; background: repeating-linear-gradient(90deg, var(--line) 0 5px, transparent 5px 10px); }
+  .rc .who { display: flex; align-items: center; gap: 9px; font-family: var(--mono); font-size: 13px; letter-spacing: 0.04em; color: var(--muted); }
+  .dot { width: 9px; height: 9px; border-radius: 50%; }
+  .dot.red { background: var(--red); box-shadow: 0 0 10px var(--red); }
+  .dot.green { background: var(--green); box-shadow: 0 0 10px var(--green); }
+  .rc .amt { font-family: var(--mono); font-weight: 700; font-size: 40px; letter-spacing: -0.01em; margin: 8px 0 6px; }
+  .rc .verdict { font-family: var(--mono); font-size: 13px; letter-spacing: 0.06em; }
+  .rc.bad .amt, .rc.bad .verdict { color: var(--red); }
+  .rc.good .amt, .rc.good .verdict { color: var(--green); }
+
+  .foot { font-family: var(--mono); font-size: 15px; color: var(--faint); letter-spacing: 0.02em; }
+  .foot b { color: var(--gold); font-weight: 500; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="top">
+      <div class="brand">
+        <span class="logo">sa<b>k</b>rit</span>
+        <span class="sub">exactly-once effects</span>
+      </div>
+      <span class="eyebrow">for AI agents</span>
+    </div>
+
+    <div class="main">
+      <div class="left">
+        <h1>Your agent resumed.<br />The world <span class="em">didn't rewind</span>.</h1>
+        <div class="promise">Every consequential tool call, <b>exactly once</b> — or it halts and <b>tells you</b>.</div>
+      </div>
+      <div class="right">
+        <div class="rc bad">
+          <div class="who"><span class="dot red"></span> NAIVE AGENT · one crash</div>
+          <div class="amt">$99.98</div>
+          <div class="verdict">✕ Double-charged</div>
+        </div>
+        <div class="rc good">
+          <div class="who"><span class="dot green"></span> WITH SAKRIT · one crash</div>
+          <div class="amt">$49.99</div>
+          <div class="verdict">✓ Exactly once</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="foot"><b>pip install sakrit</b> · Apache-2.0 · never a silent duplicate, never a silent drop</div>
+  </div>
+</body>
+</html>
